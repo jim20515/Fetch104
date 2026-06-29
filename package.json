@@ -1,0 +1,27 @@
+{
+  "name": "vendor-lead-finder",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "db:import": "node scripts/import-leads-to-sqlite.mjs",
+    "dev": "nuxt dev",
+    "import:104": "node scripts/import-104-leads.mjs",
+    "fetch:leads": "node scripts/fetch-leads.mjs && node scripts/import-leads-to-sqlite.mjs",
+    "fetch:salary": "node scripts/fetch-salary-leads.mjs",
+    "import:salary": "node scripts/import-salary-leads.mjs && node scripts/enhance-salary-leads.mjs",
+    "enrich:contacts": "node scripts/enrich-contacts.mjs",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview"
+  },
+  "dependencies": {
+    "@lucide/vue": "^1.21.0",
+    "@nuxtjs/tailwindcss": "^6.12.2",
+    "lucide-vue-next": "^0.468.0",
+    "nuxt": "^3.15.0",
+    "vue": "latest"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

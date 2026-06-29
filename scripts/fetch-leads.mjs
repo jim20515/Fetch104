@@ -1,0 +1,350 @@
+import { mkdir, writeFile } from 'node:fs/promises'
+
+const headers = {
+  'User-Agent': 'Mozilla/5.0 (compatible; LeadFinder/1.0; +https://localhost)',
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.7'
+}
+
+const beclassListUrls = [
+  'https://www.beclass.com/default.php?name=ShowList&op=ShowRegist&page=1',
+  'https://www.beclass.com/default.php?name=ShowList&op=ShowRegist&page=2'
+]
+
+const accupassSearchUrls = [
+  'https://www.accupass.com/search?q=%E5%85%AC%E9%97%9C',
+  'https://www.accupass.com/search?q=%E6%95%B4%E5%90%88%E8%A1%8C%E9%8A%B7',
+  'https://www.accupass.com/search?q=%E6%B4%BB%E5%8B%95%E4%BC%81%E5%8A%83',
+  'https://www.accupass.com/search?q=%E4%BC%81%E6%A5%AD%E8%AC%9B%E5%BA%A7',
+  'https://www.accupass.com/search?q=%E5%B7%A5%E4%BD%9C%E5%9D%8A',
+  'https://www.accupass.com/search?q=%E6%9C%83%E5%B1%95',
+  'https://www.accupass.com/search?q=%E5%93%81%E7%89%8C%E6%B4%BB%E5%8B%95'
+]
+
+const professionalCompanyPattern = /公關|整合行銷|行銷|品牌|活動企劃|活動公司|會展|展覽|策展|顧問|管理|培訓|訓練|學院|教育|講師|社群|協會|商會|人才|職涯|創業|新創|創意|工作室|有限公司|股份有限公司/i
+const professionalEventPattern = /公關|整合行銷|活動企劃|品牌活動|企業講座|企業培訓|工作坊|會展|展覽|論壇|研討會|講師|人才培訓|職涯|創業/i
+const likelyOneOffPattern = /市政府|縣政府|區公所|衛生局|消防局|醫院|學校|國小|國中|高中|大學|里辦公處|農會|廟|寺|宗教|運動會|錦標賽|盃|夏令營|旅遊|登山|羽球|桌球|托育|報名表|音樂營|親子/i
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const decodeHtml = (value = '') => value
+  .replace(/&amp;/g, '&')
+  .replace(/&lt;/g, '<')
+  .replace(/&gt;/g, '>')
+  .replace(/&quot;/g, '"')
+  .replace(/&#39;/g, "'")
+  .replace(/&nbsp;/g, ' ')
+  .replace(/<!-- -->/g, '')
+
+const stripHtml = (value = '') => decodeHtml(value)
+  .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+  .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+  .replace(/<[^>]+>/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+
+const unique = (items) => Array.from(new Set(items.filter(Boolean)))
+
+async function fetchText(url) {
+  const response = await fetch(url, { headers })
+
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}: ${url}`)
+  }
+
+  return response.text()
+}
+
+function extractEmails(text) {
+  return unique(text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])
+}
+
+function extractPhones(text) {
+  const matches = text.match(/(?:0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{3,4}(?:#\d+)?|09\d{2}[-\s]?\d{3}[-\s]?\d{3})/g) || []
+
+  return unique(matches.map((phone) => phone.replace(/\s+/g, '')))
+}
+
+function firstMatch(text, patterns) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern)
+
+    if (match?.[1]) {
+      return stripHtml(match[1]).replace(/[，,。；;：:]+$/, '').trim()
+    }
+  }
+
+  return ''
+}
+
+function normalizeDate(value) {
+  const text = value.replace(/[./年]/g, '-').replace(/月/g, '-').replace(/日/g, '')
+  const match = text.match(/(20\d{2})-(\d{1,2})-(\d{1,2})/)
+
+  if (!match) {
+    return ''
+  }
+
+  return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`
+}
+
+function categoryFromTitle(title) {
+  if (/研討|論壇|年會|講座|分享|交流/.test(title)) return '講座 / 研討會'
+  if (/課程|工作坊|營隊|訓練|研習|體驗/.test(title)) return '課程 / 工作坊'
+  if (/展|市集|音樂|演出|表演/.test(title)) return '展演 / 活動'
+  if (/親子|兒童|家庭/.test(title)) return '親子 / 教育活動'
+
+  return '活動報名'
+}
+
+function scoreLead({ source, eventCount, hasContact, category }) {
+  let score = 68
+
+  if (source === 'ACCUPASS') score += 9
+  if (source === 'BeClass') score += 7
+  if (/講座|研討|課程|工作坊|訓練|論壇/.test(category)) score += 8
+  if (hasContact) score += 7
+  if (eventCount > 1) score += Math.min(8, eventCount)
+
+  return Math.min(96, score)
+}
+
+function professionalScore({ company, category, eventName, eventCount }) {
+  const companyText = `${company}`
+  const eventText = `${category} ${eventName}`
+  const text = `${companyText} ${eventText}`
+  let score = 0
+
+  if (professionalCompanyPattern.test(companyText)) score += 45
+  if (eventCount > 1) score += Math.min(40, 22 + eventCount * 5)
+  if (professionalEventPattern.test(eventText)) score += 18
+  if (/公關|整合行銷|活動企劃|會展/.test(text)) score += 14
+  if (likelyOneOffPattern.test(text)) score -= 28
+
+  return Math.max(0, Math.min(100, score))
+}
+
+function isUsefulProfessionalLead(lead) {
+  return professionalScore(lead) >= 45
+}
+
+async function scrapeBeClass() {
+  const eventMap = new Map()
+
+  for (const listUrl of beclassListUrls) {
+    const html = await fetchText(listUrl)
+    const linkPattern = /<a href="(https:\/\/www\.beclass\.com\/rid=[^"]+)" class="listlink" title="([^"]+)"/g
+    let match
+
+    while ((match = linkPattern.exec(html))) {
+      eventMap.set(match[1], {
+        eventUrl: match[1],
+        eventName: decodeHtml(match[2])
+      })
+    }
+
+    await sleep(450)
+  }
+
+  const leads = []
+
+  for (const event of Array.from(eventMap.values()).slice(0, 28)) {
+    try {
+      const html = await fetchText(event.eventUrl)
+      const plainText = stripHtml(html)
+      const title = firstMatch(html, [/<h1 class="title"[^>]*>([\s\S]*?)<\/h1>/i, /<title>([\s\S]*?)<\/title>/i]) || event.eventName
+      const description = firstMatch(html, [/<meta name="description" content="([^"]+)"/i, /<meta property="og:description" content="([^"]+)"/i])
+      const organizer = firstMatch(description || plainText, [
+        /主辦單位[：:\s]+([^🌟。\n\r<]{2,40})/i,
+        /主辦[：:\s]+([^。\n\r<]{2,40})/i,
+        /承辦單位[：:\s]+([^。\n\r<]{2,40})/i
+      ])
+      const date = normalizeDate(firstMatch(html, [/\((20\d{2}[-/年.]\d{1,2}[-/月.]\d{1,2})\)/, /(20\d{2}年\d{1,2}月\d{1,2}日)/]))
+      const emails = extractEmails(plainText)
+      const phones = extractPhones(plainText)
+      const company = organizer || title.replace(/[-｜|].*$/, '').slice(0, 28)
+      const category = categoryFromTitle(title)
+
+      const lead = {
+        company,
+        source: 'BeClass',
+        category,
+        latestEvent: date || '未標示',
+        eventCount: 1,
+        fitScore: scoreLead({ source: 'BeClass', eventCount: 1, hasContact: emails.length > 0 || phones.length > 0, category }),
+        contact: emails[0] || '未公開',
+        phone: phones[0] || '未公開',
+        website: event.eventUrl,
+        status: '待開發',
+        eventName: title,
+        eventUrl: event.eventUrl
+      }
+
+      if (isUsefulProfessionalLead(lead)) {
+        leads.push(lead)
+      }
+
+      await sleep(350)
+    } catch (error) {
+      console.warn(`[BeClass] skipped ${event.eventUrl}: ${error.message}`)
+    }
+  }
+
+  return leads
+}
+
+function parseAccupassSearch(html) {
+  const events = new Map()
+  const cardPattern = /<p class="EventCard_event-time__[^"]*">([^<]+)<\/p>[\s\S]*?<a href="(\/event\/\d+)[^"]*">[\s\S]*?<p class="EventCard_event-name__[^"]*">([\s\S]*?)<\/p>/g
+  let match
+
+  while ((match = cardPattern.exec(html))) {
+    events.set(`https://www.accupass.com${match[2]}`, {
+      eventUrl: `https://www.accupass.com${match[2]}`,
+      latestEvent: normalizeDate(match[1]) || '未標示',
+      eventName: stripHtml(match[3])
+    })
+  }
+
+  return Array.from(events.values())
+}
+
+function extractJsonLd(html) {
+  const matches = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g) || []
+
+  for (const block of matches) {
+    const json = block.replace(/^<script type="application\/ld\+json">/, '').replace(/<\/script>$/, '')
+
+    try {
+      const parsed = JSON.parse(decodeHtml(json))
+
+      if (parsed?.organizer?.name) {
+        return parsed
+      }
+    } catch {
+      continue
+    }
+  }
+
+  return null
+}
+
+async function scrapeAccupass() {
+  const eventMap = new Map()
+
+  for (const url of accupassSearchUrls) {
+    const html = await fetchText(url)
+
+    for (const event of parseAccupassSearch(html)) {
+      eventMap.set(event.eventUrl, event)
+    }
+
+    await sleep(450)
+  }
+
+  const leads = []
+
+  for (const event of Array.from(eventMap.values()).slice(0, 24)) {
+    try {
+      const html = await fetchText(event.eventUrl)
+      const data = extractJsonLd(html)
+      const plainText = stripHtml(html)
+      const eventName = data?.name || event.eventName
+      const organizer = data?.organizer?.name || firstMatch(html, [/<p class="OrgInfo_org-title__[^"]*">([\s\S]*?)<\/p>/i])
+      const category = categoryFromTitle(eventName)
+      const emails = unique([data?.organizer?.email, ...extractEmails(plainText)])
+      const phones = extractPhones(plainText)
+
+      if (!organizer) {
+        continue
+      }
+
+      leads.push({
+        company: organizer,
+        source: 'ACCUPASS',
+        category,
+        latestEvent: normalizeDate(data?.startDate || '') || event.latestEvent,
+        eventCount: 1,
+        fitScore: scoreLead({ source: 'ACCUPASS', eventCount: 1, hasContact: emails.length > 0 || phones.length > 0, category }),
+        contact: emails[0] || '未公開',
+        phone: phones[0] || '未公開',
+        website: data?.organizer?.url || event.eventUrl,
+        status: '待開發',
+        eventName,
+        eventUrl: event.eventUrl
+      })
+
+      await sleep(350)
+    } catch (error) {
+      console.warn(`[ACCUPASS] skipped ${event.eventUrl}: ${error.message}`)
+    }
+  }
+
+  return leads
+}
+
+function mergeLeads(rawLeads) {
+  const grouped = new Map()
+
+  for (const lead of rawLeads) {
+    const key = `${lead.source}:${lead.company}`
+    const existing = grouped.get(key)
+
+    if (!existing) {
+      grouped.set(key, lead)
+      continue
+    }
+
+    existing.eventCount += 1
+    existing.fitScore = Math.max(existing.fitScore, scoreLead({
+      source: existing.source,
+      eventCount: existing.eventCount,
+      hasContact: existing.contact !== '未公開' || existing.phone !== '未公開',
+      category: existing.category
+    }))
+
+    if (existing.contact === '未公開' && lead.contact !== '未公開') existing.contact = lead.contact
+    if (existing.phone === '未公開' && lead.phone !== '未公開') existing.phone = lead.phone
+    if (existing.latestEvent === '未標示' || lead.latestEvent > existing.latestEvent) {
+      existing.latestEvent = lead.latestEvent
+      existing.eventName = lead.eventName
+      existing.eventUrl = lead.eventUrl
+      existing.website = lead.website
+    }
+  }
+
+  return Array.from(grouped.values())
+    .map((lead) => {
+      const proScore = professionalScore(lead)
+
+      return {
+        ...lead,
+        fitScore: Math.min(99, Math.round((lead.fitScore * 0.55) + (proScore * 0.45))),
+        professionalScore: proScore,
+        targetType: proScore >= 70 ? '專業主辦' : proScore >= 45 ? '可觀察' : '一般活動'
+      }
+    })
+    .filter((lead) => lead.targetType !== '一般活動')
+    .sort((a, b) => b.professionalScore - a.professionalScore || b.fitScore - a.fitScore || b.latestEvent.localeCompare(a.latestEvent))
+}
+
+const startedAt = new Date().toISOString()
+const beclassLeads = await scrapeBeClass()
+const accupassLeads = await scrapeAccupass()
+const leads = mergeLeads([...beclassLeads, ...accupassLeads])
+
+await mkdir('data', { recursive: true })
+await writeFile('data/leads.json', `${JSON.stringify(leads, null, 2)}\n`)
+await writeFile('data/scrape-report.json', `${JSON.stringify({
+  startedAt,
+  finishedAt: new Date().toISOString(),
+  total: leads.length,
+  sources: {
+    BeClass: beclassLeads.length,
+    ACCUPASS: accupassLeads.length,
+    KKTIX: 'Cloudflare challenge; skipped without bypass',
+    '104': 'not enabled in this scraper yet'
+  }
+}, null, 2)}\n`)
+
+console.log(`Fetched ${leads.length} real leads`)

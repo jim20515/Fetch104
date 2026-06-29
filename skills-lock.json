@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "architecture-documentation": {
+      "source": "normcrandall/claudeskills",
+      "sourceType": "github",
+      "skillPath": "skills/architecture-documentation/SKILL.md",
+      "computedHash": "0e1225c1da76a394f0ddd35341267989cb3cee475b41c8ba68673a3ed5bd932d"
+    }
+  }
+}
