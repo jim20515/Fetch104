@@ -1,7 +1,7 @@
 /**
  * 強化 salary.tw 名單品質
  * A. 關鍵字過濾：負面關鍵字標記非活動公司，正面關鍵字加分
- * B. ACCUPASS/BeClass cross-reference：有辦過活動的公司大幅加分
+ * B. ACCUPASS cross-reference：有辦過活動的公司大幅加分
  */
 import { spawnSync } from 'node:child_process'
 
@@ -54,10 +54,10 @@ const POSITIVE_SCORES = [
   { pattern: /傳播顧問|媒體公關|媒體策略|行銷傳播/, score: 12 },
 ]
 
-// ── 從 ACCUPASS/BeClass/104 抓公司名詞語，供模糊比對 ─────────────────
+// ── 從 ACCUPASS/104 抓公司名詞語，供模糊比對 ─────────────────
 const eventCompanies = runSql(`
   SELECT DISTINCT company FROM leads
-  WHERE source IN ('ACCUPASS', 'BeClass', '104')
+  WHERE source IN ('ACCUPASS', '104')
   AND target_type IN ('專業主辦', '可觀察')
 `).map(r => r.company.replace(/[_（(][^)）]*/g, '').trim().toLowerCase())
 
@@ -173,7 +173,7 @@ console.log('=== salary.tw 重新評分結果 ===')
 console.log(`  專業主辦：${stats.專業主辦} 間`)
 console.log(`  可觀察：  ${stats.可觀察} 間`)
 console.log(`  一般活動：${stats.一般活動} 間（UI 預設分數門檻以下，不會顯示）`)
-console.log(`  cross-ref 命中：${stats.crossRefHits} 間（有在 ACCUPASS/BeClass/104 出現）`)
+console.log(`  cross-ref 命中：${stats.crossRefHits} 間（有在 ACCUPASS/104 出現）`)
 console.log()
 
 // 顯示各類樣本

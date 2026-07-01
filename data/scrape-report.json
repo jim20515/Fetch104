@@ -1,10 +1,9 @@
 {
   "startedAt": "2026-06-26T15:34:31.977Z",
   "finishedAt": "2026-06-26T15:35:18.166Z",
-  "total": 9,
+  "total": 7,
   "sources": {
     "104": "not enabled in this scraper yet",
-    "BeClass": 2,
     "ACCUPASS": 24,
     "KKTIX": "Cloudflare challenge; skipped without bypass"
   }

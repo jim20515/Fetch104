@@ -22,8 +22,24 @@ export interface LeadRow {
   targetType: string
   scoreReason: string | null
   officialWebsite: string | null
+  industry: string
   createdAt: string
   updatedAt: string
+}
+
+export interface ScoringProfileRow {
+  id: number
+  name: string
+  description: string | null
+  companyKeywords: string[]
+  businessKeywords: string[]
+  excludeKeywords: string[]
+  proThreshold: number
+  observableThreshold: number
+  proLabel: string
+  observableLabel: string
+  generalLabel: string
+  isBuiltin: boolean
 }
 
 const runSqlite = (args: string[], input?: string) => {

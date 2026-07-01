@@ -15,6 +15,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Target,
+  Trash2,
   Upload
 } from '@lucide/vue'
 
@@ -35,38 +36,81 @@ interface Lead {
   eventName?: string
   eventUrl?: string
   professionalScore?: number
-  targetType?: '專業主辦' | '可觀察' | '一般活動'
+  targetType?: string
   scoreReason?: string | null
   officialWebsite?: string | null
+  industry?: string
   createdAt?: string
   updatedAt?: string
+}
+
+interface ScoringProfile {
+  id: number
+  name: string
+  description: string | null
+  companyKeywords: string[]
+  businessKeywords: string[]
+  excludeKeywords: string[]
+  proThreshold: number
+  observableThreshold: number
+  proLabel: string
+  observableLabel: string
+  generalLabel: string
+  isBuiltin: boolean
 }
 
 const { data: leadResponse, pending: leadsPending, error: leadsError, refresh: refreshLeads } = await useFetch<{
   leads: Lead[]
   total: number
   sources: LeadSource[]
+  industries: string[]
   storage: string
 }>('/api/leads', {
   default: () => ({
     leads: [],
     total: 0,
     sources: [],
+    industries: [],
     storage: 'sqlite'
   })
 })
 
+const { data: profileResponse, refresh: refreshProfiles } = await useFetch<{ profiles: ScoringProfile[] }>('/api/profiles', {
+  default: () => ({ profiles: [] })
+})
+
 const leads = computed(() => leadResponse.value?.leads ?? [])
 const sources = computed<LeadSource[]>(() => leadResponse.value?.sources ?? [])
+const industries = computed(() => leadResponse.value?.industries ?? [])
+const profiles = computed(() => profileResponse.value?.profiles ?? [])
+const proLabels = computed(() => new Set(profiles.value.map((profile) => profile.proLabel)))
+const observableLabels = computed(() => new Set(profiles.value.map((profile) => profile.observableLabel)))
 
+const activeView = ref<'leads' | 'rules'>('leads')
 const keyword = ref('')
 const activeSource = ref<LeadSource | '全部'>('全部')
-const activeTargetType = ref<'專業主辦' | '可觀察' | '全部'>('全部')
+const activeIndustry = ref<string | '全部'>('全部')
+const activeTargetType = ref<string>('全部')
 const minScore = ref(45)
 const currentPage = ref(1)
 const pageSize = ref(8)
 const pageSizeOptions = [5, 8, 12, 20]
-const targetTypeOptions = ['全部', '專業主辦', '可觀察'] as const
+
+const targetTypeOptions = computed(() => {
+  const present = new Set(leads.value.map((lead) => lead.targetType).filter(Boolean) as string[])
+  const ordered: string[] = []
+
+  for (const profile of profiles.value) {
+    if (present.has(profile.proLabel) && !ordered.includes(profile.proLabel)) ordered.push(profile.proLabel)
+    if (present.has(profile.observableLabel) && !ordered.includes(profile.observableLabel)) ordered.push(profile.observableLabel)
+  }
+
+  for (const type of present) {
+    if (!ordered.includes(type)) ordered.push(type)
+  }
+
+  return ['全部', ...ordered]
+})
 
 const filteredLeads = computed(() => {
   const term = keyword.value.trim().toLowerCase()
@@ -82,6 +126,7 @@ const filteredLeads = computed(() => {
 
     return matchesKeyword
       && (activeSource.value === '全部' || lead.source === activeSource.value)
+      && (activeIndustry.value === '全部' || lead.industry === activeIndustry.value)
       && (activeTargetType.value === '全部' || lead.targetType === activeTargetType.value)
       && (lead.professionalScore ?? lead.fitScore) >= minScore.value
   })
@@ -123,22 +168,22 @@ const goToPage = (page: number) => {
   currentPage.value = Math.min(Math.max(page, 1), totalPages.value)
 }
 
-watch([keyword, activeSource, activeTargetType, minScore, pageSize], () => {
+watch([keyword, activeSource, activeIndustry, activeTargetType, minScore, pageSize], () => {
   currentPage.value = 1
 })
 
 const summary = computed(() => {
-  const professionalLeads = leads.value.filter((lead) => lead.targetType === '專業主辦').length
-  const observableLeads = leads.value.filter((lead) => lead.targetType === '可觀察').length
+  const professionalLeads = leads.value.filter((lead) => lead.targetType && proLabels.value.has(lead.targetType)).length
+  const observableLeads = leads.value.filter((lead) => lead.targetType && observableLabels.value.has(lead.targetType)).length
   const averageEvents = leads.value.length
     ? leads.value.reduce((total, lead) => total + lead.eventCount, 0) / leads.value.length
     : 0
 
   return [
     { label: '名單總數', value: leads.value.length.toLocaleString(), hint: 'SQLite 本機資料' },
-    { label: '專業主辦', value: professionalLeads.toLocaleString(), hint: '優先開發' },
-    { label: '可觀察', value: observableLeads.toLocaleString(), hint: '需人工確認' },
-    { label: '資料來源', value: sources.value.length.toLocaleString(), hint: '平台與名錄' },
+    { label: '高潛力名單', value: professionalLeads.toLocaleString(), hint: '優先開發' },
+    { label: '可觀察名單', value: observableLeads.toLocaleString(), hint: '需人工確認' },
+    { label: '產業設定', value: industries.value.length.toLocaleString(), hint: '評分規則分組' },
     { label: '平均活動數', value: averageEvents.toFixed(1), hint: '同主辦累計' }
   ]
 })
@@ -149,6 +194,70 @@ const statusClass = (status: Lead['status']) => {
     '已聯絡': 'bg-amber-50 text-amber-700 ring-amber-200',
     '待開發': 'bg-slate-100 text-slate-700 ring-slate-200'
   }[status]
+}
+
+const targetTypeClass = (targetType?: string) => {
+  if (targetType && proLabels.value.has(targetType)) return 'bg-teal-50 text-teal-700 ring-teal-200'
+  return 'bg-amber-50 text-amber-700 ring-amber-200'
+}
+
+const emptyProfileForm = () => ({
+  name: '',
+  description: '',
+  companyKeywords: '',
+  businessKeywords: '',
+  excludeKeywords: '',
+  proThreshold: 70,
+  observableThreshold: 45,
+  proLabel: '專業廠商',
+  observableLabel: '可觀察',
+  generalLabel: '一般名單'
+})
+
+const profileForm = ref(emptyProfileForm())
+const profileSaving = ref(false)
+const profileError = ref('')
+
+const splitKeywords = (value: string) => value.split(/[,、\n]/).map((item) => item.trim()).filter(Boolean)
+
+const submitProfile = async () => {
+  if (!profileForm.value.name.trim()) {
+    profileError.value = '請輸入產業設定名稱'
+    return
+  }
+
+  profileSaving.value = true
+  profileError.value = ''
+
+  try {
+    await $fetch('/api/profiles', {
+      method: 'POST',
+      body: {
+        name: profileForm.value.name.trim(),
+        description: profileForm.value.description,
+        companyKeywords: splitKeywords(profileForm.value.companyKeywords),
+        businessKeywords: splitKeywords(profileForm.value.businessKeywords),
+        excludeKeywords: splitKeywords(profileForm.value.excludeKeywords),
+        proThreshold: Number(profileForm.value.proThreshold),
+        observableThreshold: Number(profileForm.value.observableThreshold),
+        proLabel: profileForm.value.proLabel,
+        observableLabel: profileForm.value.observableLabel,
+        generalLabel: profileForm.value.generalLabel
+      }
+    })
+
+    await refreshProfiles()
+    profileForm.value = emptyProfileForm()
+  } catch (error: any) {
+    profileError.value = error?.data?.statusMessage || '儲存失敗'
+  } finally {
+    profileSaving.value = false
+  }
+}
+
+const deleteProfile = async (name: string) => {
+  await $fetch(`/api/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  await refreshProfiles()
 }
 </script>
 
@@ -166,7 +275,11 @@ const statusClass = (status: Lead['status']) => {
       </div>
 
       <nav class="space-y-1 px-3 py-5">
-        <button class="flex h-10 w-full items-center gap-3 rounded-md bg-slate-100 px-3 text-sm font-medium text-ink">
+        <button
+          class="flex h-10 w-full items-center gap-3 rounded-md px-3 text-sm font-medium"
+          :class="activeView === 'leads' ? 'bg-slate-100 text-ink' : 'text-muted hover:bg-slate-50'"
+          @click="activeView = 'leads'"
+        >
           <Target :size="17" />
           名單探索
         </button>
@@ -178,7 +291,11 @@ const statusClass = (status: Lead['status']) => {
           <Building2 :size="17" />
           公司資料
         </button>
-        <button class="flex h-10 w-full items-center gap-3 rounded-md px-3 text-sm font-medium text-muted hover:bg-slate-50">
+        <button
+          class="flex h-10 w-full items-center gap-3 rounded-md px-3 text-sm font-medium"
+          :class="activeView === 'rules' ? 'bg-slate-100 text-ink' : 'text-muted hover:bg-slate-50'"
+          @click="activeView = 'rules'"
+        >
           <SlidersHorizontal :size="17" />
           評分規則
         </button>
@@ -213,7 +330,7 @@ const statusClass = (status: Lead['status']) => {
         </div>
       </header>
 
-      <div class="px-4 py-6 sm:px-6 lg:px-8">
+      <div v-if="activeView === 'leads'" class="px-4 py-6 sm:px-6 lg:px-8">
         <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           <div
             v-for="item in summary"
@@ -236,7 +353,7 @@ const statusClass = (status: Lead['status']) => {
         </div>
 
         <section class="mt-6 rounded-md border border-line bg-white shadow-soft">
-          <div class="grid gap-3 border-b border-line p-4 xl:grid-cols-[1fr_auto_auto_auto]">
+          <div class="grid gap-3 border-b border-line p-4 xl:grid-cols-[1fr_auto_auto_auto_auto]">
             <label class="relative block">
               <Search class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" :size="18" />
               <input
@@ -260,6 +377,18 @@ const statusClass = (status: Lead['status']) => {
 
             <div class="flex overflow-x-auto rounded-md border border-line bg-slate-50 p-1">
               <button
+                v-for="industry in ['全部', ...industries]"
+                :key="industry"
+                class="h-9 whitespace-nowrap rounded px-3 text-sm font-medium"
+                :class="activeIndustry === industry ? 'bg-white text-ink shadow-sm' : 'text-muted hover:text-ink'"
+                @click="activeIndustry = industry"
+              >
+                {{ industry }}
+              </button>
+            </div>
+
+            <div class="flex overflow-x-auto rounded-md border border-line bg-slate-50 p-1">
+              <button
                 v-for="targetType in targetTypeOptions"
                 :key="targetType"
                 class="h-9 whitespace-nowrap rounded px-3 text-sm font-medium"
@@ -272,7 +401,7 @@ const statusClass = (status: Lead['status']) => {
 
             <label class="flex h-11 items-center gap-3 rounded-md border border-line px-3 text-sm text-muted">
               <Filter :size="17" />
-              <span>主辦分數</span>
+              <span>符合分數</span>
               <input
                 v-model="minScore"
                 class="w-24 accent-teal"
@@ -285,7 +414,7 @@ const statusClass = (status: Lead['status']) => {
           </div>
 
           <div class="overflow-x-auto">
-            <table class="w-full min-w-[1180px] border-collapse text-left">
+            <table class="w-full min-w-[1320px] border-collapse text-left">
               <thead>
                 <tr class="border-b border-line bg-slate-50 text-xs uppercase text-muted">
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">公司</th>
@@ -293,8 +422,9 @@ const statusClass = (status: Lead['status']) => {
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">類型</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">最近活動</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">活動數</th>
-                  <th class="whitespace-nowrap px-4 py-3 font-semibold">主辦分數</th>
+                  <th class="whitespace-nowrap px-4 py-3 font-semibold">符合分數</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">聯絡資訊</th>
+                  <th class="whitespace-nowrap px-4 py-3 font-semibold">產業設定</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">名單類型</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">連結</th>
                 </tr>
@@ -343,8 +473,9 @@ const statusClass = (status: Lead['status']) => {
                       </p>
                     </div>
                   </td>
+                  <td class="whitespace-nowrap px-4 py-4 text-sm text-muted">{{ lead.industry ?? '—' }}</td>
                   <td class="px-4 py-4">
-                    <span class="inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ring-1" :class="lead.targetType === '專業主辦' ? 'bg-teal-50 text-teal-700 ring-teal-200' : 'bg-amber-50 text-amber-700 ring-amber-200'">
+                    <span class="inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ring-1" :class="targetTypeClass(lead.targetType)">
                       {{ lead.targetType }}
                     </span>
                   </td>
@@ -373,7 +504,7 @@ const statusClass = (status: Lead['status']) => {
                   </td>
                 </tr>
                 <tr v-if="paginatedLeads.length === 0">
-                  <td colspan="9" class="px-4 py-12 text-center text-sm text-muted">
+                  <td colspan="10" class="px-4 py-12 text-center text-sm text-muted">
                     目前沒有符合條件的名單
                   </td>
                 </tr>
@@ -446,7 +577,7 @@ const statusClass = (status: Lead['status']) => {
             <ol class="mt-5 space-y-3">
               <li class="flex gap-3">
                 <span class="grid size-7 shrink-0 place-items-center rounded-md bg-teal text-sm font-semibold text-white">1</span>
-                <p class="text-sm text-muted"><strong class="text-ink">活動平台主辦單位</strong>：ACCUPASS、KKTIX、BeClass，需求最直接。</p>
+                <p class="text-sm text-muted"><strong class="text-ink">活動平台主辦單位</strong>：ACCUPASS、KKTIX，需求最直接。</p>
               </li>
               <li class="flex gap-3">
                 <span class="grid size-7 shrink-0 place-items-center rounded-md bg-ink text-sm font-semibold text-white">2</span>
@@ -470,6 +601,163 @@ const statusClass = (status: Lead['status']) => {
               <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">phone</span>
               <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">fit_score</span>
               <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">last_event_at</span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div v-else class="px-4 py-6 sm:px-6 lg:px-8">
+        <section class="rounded-md border border-line bg-white p-5 shadow-soft">
+          <h2 class="text-base font-semibold text-ink">產業評分規則</h2>
+          <p class="mt-1 text-sm text-muted">
+            每組「產業設定」定義公司關鍵字、業務關鍵字、排除關鍵字與門檻分數，抓取時用
+            <code class="rounded bg-slate-100 px-1.5 py-0.5 text-xs">--profile=名稱</code>
+            套用（例如 <code class="rounded bg-slate-100 px-1.5 py-0.5 text-xs">npm run fetch:leads -- --profile=資訊科技</code>）。
+          </p>
+
+          <div class="mt-5 space-y-3">
+            <div
+              v-for="profile in profiles"
+              :key="profile.id"
+              class="rounded-md border border-line p-4"
+            >
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <p class="font-medium text-ink">{{ profile.name }}</p>
+                    <span
+                      v-if="profile.isBuiltin"
+                      class="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-muted ring-1 ring-line"
+                    >內建</span>
+                  </div>
+                  <p class="mt-1 text-sm text-muted">{{ profile.description }}</p>
+                </div>
+                <button
+                  v-if="!profile.isBuiltin"
+                  class="grid size-9 place-items-center rounded-md border border-line text-muted hover:text-red-600"
+                  title="刪除設定檔"
+                  @click="deleteProfile(profile.name)"
+                >
+                  <Trash2 :size="16" />
+                </button>
+              </div>
+
+              <div class="mt-3 grid gap-3 text-sm sm:grid-cols-3">
+                <div>
+                  <p class="text-xs uppercase text-muted">公司關鍵字</p>
+                  <p class="mt-1 text-ink">{{ profile.companyKeywords.join('、') || '—' }}</p>
+                </div>
+                <div>
+                  <p class="text-xs uppercase text-muted">業務關鍵字</p>
+                  <p class="mt-1 text-ink">{{ profile.businessKeywords.join('、') || '—' }}</p>
+                </div>
+                <div>
+                  <p class="text-xs uppercase text-muted">排除關鍵字</p>
+                  <p class="mt-1 text-ink">{{ profile.excludeKeywords.join('、') || '—' }}</p>
+                </div>
+              </div>
+
+              <div class="mt-3 flex flex-wrap gap-4 text-xs text-muted">
+                <span>{{ profile.proLabel }} ≥ {{ profile.proThreshold }} 分</span>
+                <span>{{ profile.observableLabel }} ≥ {{ profile.observableThreshold }} 分</span>
+                <span>其餘標為「{{ profile.generalLabel }}」（不顯示）</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="mt-6 rounded-md border border-line bg-white p-5 shadow-soft">
+          <h2 class="text-base font-semibold text-ink">新增自訂產業設定</h2>
+          <p class="mt-1 text-sm text-muted">依你要找的產業，設定關鍵字與門檻分數。關鍵字用逗號或頓號分隔。</p>
+
+          <div class="mt-4 grid gap-4">
+            <div class="grid gap-4 sm:grid-cols-2">
+              <label class="block text-sm">
+                <span class="text-muted">設定名稱</span>
+                <input
+                  v-model="profileForm.name"
+                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                  placeholder="例如：資訊科技、餐飲加盟"
+                >
+              </label>
+              <label class="block text-sm">
+                <span class="text-muted">說明</span>
+                <input
+                  v-model="profileForm.description"
+                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                  placeholder="這組設定要找什麼樣的公司"
+                >
+              </label>
+            </div>
+
+            <label class="block text-sm">
+              <span class="text-muted">公司關鍵字（出現在公司名稱）</span>
+              <textarea
+                v-model="profileForm.companyKeywords"
+                rows="2"
+                class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-teal"
+                placeholder="資訊、軟體、科技、顧問"
+              />
+            </label>
+
+            <label class="block text-sm">
+              <span class="text-muted">業務關鍵字（出現在類別或名稱中代表符合業務）</span>
+              <textarea
+                v-model="profileForm.businessKeywords"
+                rows="2"
+                class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-teal"
+                placeholder="系統開發、雲端服務、資訊委外"
+              />
+            </label>
+
+            <label class="block text-sm">
+              <span class="text-muted">排除關鍵字（出現時直接扣分）</span>
+              <textarea
+                v-model="profileForm.excludeKeywords"
+                rows="2"
+                class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-teal"
+                placeholder="學校、醫院、政府機關"
+              />
+            </label>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <label class="block text-sm">
+                <span class="text-muted">高分標籤（≥ 門檻分數）</span>
+                <input
+                  v-model="profileForm.proLabel"
+                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                >
+              </label>
+              <label class="block text-sm">
+                <span class="text-muted">中分標籤</span>
+                <input
+                  v-model="profileForm.observableLabel"
+                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                >
+              </label>
+            </div>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <label class="block text-sm">
+                <span class="text-muted">高分門檻：{{ profileForm.proThreshold }}</span>
+                <input v-model="profileForm.proThreshold" type="range" min="0" max="100" class="mt-2 w-full accent-teal">
+              </label>
+              <label class="block text-sm">
+                <span class="text-muted">可觀察門檻：{{ profileForm.observableThreshold }}</span>
+                <input v-model="profileForm.observableThreshold" type="range" min="0" max="100" class="mt-2 w-full accent-teal">
+              </label>
+            </div>
+
+            <p v-if="profileError" class="text-sm text-red-600">{{ profileError }}</p>
+
+            <div>
+              <button
+                class="inline-flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                :disabled="profileSaving"
+                @click="submitProfile"
+              >
+                {{ profileSaving ? '儲存中…' : '儲存設定檔' }}
+              </button>
             </div>
           </div>
         </section>

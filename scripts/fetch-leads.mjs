@@ -1,15 +1,16 @@
 import { mkdir, writeFile } from 'node:fs/promises'
+import { loadProfile, scoreWithProfile } from './lib/scoring-profiles.mjs'
+
+const dbPath = 'data/leads.sqlite'
+const profileArg = process.argv.find((arg) => arg.startsWith('--profile='))
+const profileName = profileArg ? profileArg.slice('--profile='.length) : '活動會展'
+const profile = loadProfile(dbPath, profileName)
 
 const headers = {
   'User-Agent': 'Mozilla/5.0 (compatible; LeadFinder/1.0; +https://localhost)',
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.7'
 }
-
-const beclassListUrls = [
-  'https://www.beclass.com/default.php?name=ShowList&op=ShowRegist&page=1',
-  'https://www.beclass.com/default.php?name=ShowList&op=ShowRegist&page=2'
-]
 
 const accupassSearchUrls = [
   'https://www.accupass.com/search?q=%E5%85%AC%E9%97%9C',
@@ -20,10 +21,6 @@ const accupassSearchUrls = [
   'https://www.accupass.com/search?q=%E6%9C%83%E5%B1%95',
   'https://www.accupass.com/search?q=%E5%93%81%E7%89%8C%E6%B4%BB%E5%8B%95'
 ]
-
-const professionalCompanyPattern = /公關|整合行銷|行銷|品牌|活動企劃|活動公司|會展|展覽|策展|顧問|管理|培訓|訓練|學院|教育|講師|社群|協會|商會|人才|職涯|創業|新創|創意|工作室|有限公司|股份有限公司/i
-const professionalEventPattern = /公關|整合行銷|活動企劃|品牌活動|企業講座|企業培訓|工作坊|會展|展覽|論壇|研討會|講師|人才培訓|職涯|創業/i
-const likelyOneOffPattern = /市政府|縣政府|區公所|衛生局|消防局|醫院|學校|國小|國中|高中|大學|里辦公處|農會|廟|寺|宗教|運動會|錦標賽|盃|夏令營|旅遊|登山|羽球|桌球|托育|報名表|音樂營|親子/i
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -101,96 +98,11 @@ function scoreLead({ source, eventCount, hasContact, category }) {
   let score = 68
 
   if (source === 'ACCUPASS') score += 9
-  if (source === 'BeClass') score += 7
   if (/講座|研討|課程|工作坊|訓練|論壇/.test(category)) score += 8
   if (hasContact) score += 7
   if (eventCount > 1) score += Math.min(8, eventCount)
 
   return Math.min(96, score)
-}
-
-function professionalScore({ company, category, eventName, eventCount }) {
-  const companyText = `${company}`
-  const eventText = `${category} ${eventName}`
-  const text = `${companyText} ${eventText}`
-  let score = 0
-
-  if (professionalCompanyPattern.test(companyText)) score += 45
-  if (eventCount > 1) score += Math.min(40, 22 + eventCount * 5)
-  if (professionalEventPattern.test(eventText)) score += 18
-  if (/公關|整合行銷|活動企劃|會展/.test(text)) score += 14
-  if (likelyOneOffPattern.test(text)) score -= 28
-
-  return Math.max(0, Math.min(100, score))
-}
-
-function isUsefulProfessionalLead(lead) {
-  return professionalScore(lead) >= 45
-}
-
-async function scrapeBeClass() {
-  const eventMap = new Map()
-
-  for (const listUrl of beclassListUrls) {
-    const html = await fetchText(listUrl)
-    const linkPattern = /<a href="(https:\/\/www\.beclass\.com\/rid=[^"]+)" class="listlink" title="([^"]+)"/g
-    let match
-
-    while ((match = linkPattern.exec(html))) {
-      eventMap.set(match[1], {
-        eventUrl: match[1],
-        eventName: decodeHtml(match[2])
-      })
-    }
-
-    await sleep(450)
-  }
-
-  const leads = []
-
-  for (const event of Array.from(eventMap.values()).slice(0, 28)) {
-    try {
-      const html = await fetchText(event.eventUrl)
-      const plainText = stripHtml(html)
-      const title = firstMatch(html, [/<h1 class="title"[^>]*>([\s\S]*?)<\/h1>/i, /<title>([\s\S]*?)<\/title>/i]) || event.eventName
-      const description = firstMatch(html, [/<meta name="description" content="([^"]+)"/i, /<meta property="og:description" content="([^"]+)"/i])
-      const organizer = firstMatch(description || plainText, [
-        /主辦單位[：:\s]+([^🌟。\n\r<]{2,40})/i,
-        /主辦[：:\s]+([^。\n\r<]{2,40})/i,
-        /承辦單位[：:\s]+([^。\n\r<]{2,40})/i
-      ])
-      const date = normalizeDate(firstMatch(html, [/\((20\d{2}[-/年.]\d{1,2}[-/月.]\d{1,2})\)/, /(20\d{2}年\d{1,2}月\d{1,2}日)/]))
-      const emails = extractEmails(plainText)
-      const phones = extractPhones(plainText)
-      const company = organizer || title.replace(/[-｜|].*$/, '').slice(0, 28)
-      const category = categoryFromTitle(title)
-
-      const lead = {
-        company,
-        source: 'BeClass',
-        category,
-        latestEvent: date || '未標示',
-        eventCount: 1,
-        fitScore: scoreLead({ source: 'BeClass', eventCount: 1, hasContact: emails.length > 0 || phones.length > 0, category }),
-        contact: emails[0] || '未公開',
-        phone: phones[0] || '未公開',
-        website: event.eventUrl,
-        status: '待開發',
-        eventName: title,
-        eventUrl: event.eventUrl
-      }
-
-      if (isUsefulProfessionalLead(lead)) {
-        leads.push(lead)
-      }
-
-      await sleep(350)
-    } catch (error) {
-      console.warn(`[BeClass] skipped ${event.eventUrl}: ${error.message}`)
-    }
-  }
-
-  return leads
 }
 
 function parseAccupassSearch(html) {
@@ -315,23 +227,24 @@ function mergeLeads(rawLeads) {
 
   return Array.from(grouped.values())
     .map((lead) => {
-      const proScore = professionalScore(lead)
+      const { score: proScore, targetType } = scoreWithProfile(profile, lead)
 
       return {
         ...lead,
         fitScore: Math.min(99, Math.round((lead.fitScore * 0.55) + (proScore * 0.45))),
         professionalScore: proScore,
-        targetType: proScore >= 70 ? '專業主辦' : proScore >= 45 ? '可觀察' : '一般活動'
+        targetType,
+        industry: profile.name
       }
     })
-    .filter((lead) => lead.targetType !== '一般活動')
+    .filter((lead) => lead.targetType !== profile.generalLabel)
     .sort((a, b) => b.professionalScore - a.professionalScore || b.fitScore - a.fitScore || b.latestEvent.localeCompare(a.latestEvent))
 }
 
+console.log(`使用評分設定檔：${profile.name}`)
 const startedAt = new Date().toISOString()
-const beclassLeads = await scrapeBeClass()
 const accupassLeads = await scrapeAccupass()
-const leads = mergeLeads([...beclassLeads, ...accupassLeads])
+const leads = mergeLeads([...accupassLeads])
 
 await mkdir('data', { recursive: true })
 await writeFile('data/leads.json', `${JSON.stringify(leads, null, 2)}\n`)
@@ -340,7 +253,6 @@ await writeFile('data/scrape-report.json', `${JSON.stringify({
   finishedAt: new Date().toISOString(),
   total: leads.length,
   sources: {
-    BeClass: beclassLeads.length,
     ACCUPASS: accupassLeads.length,
     KKTIX: 'Cloudflare challenge; skipped without bypass',
     '104': 'not enabled in this scraper yet'

@@ -18,6 +18,7 @@ interface RawLeadRow {
   target_type: string
   score_reason: string | null
   official_website: string | null
+  industry: string
   created_at: string
   updated_at: string
 }
@@ -42,6 +43,7 @@ export default defineEventHandler(() => {
       target_type,
       score_reason,
       official_website,
+      industry,
       created_at,
       updated_at
     FROM leads
@@ -66,6 +68,7 @@ export default defineEventHandler(() => {
     targetType: row.target_type,
     scoreReason: row.score_reason,
     officialWebsite: row.official_website,
+    industry: row.industry,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }))
@@ -74,6 +77,7 @@ export default defineEventHandler(() => {
     leads,
     total: leads.length,
     sources: Array.from(new Set(leads.map((lead) => lead.source))),
+    industries: Array.from(new Set(leads.map((lead) => lead.industry))),
     storage: 'sqlite'
   }
 })

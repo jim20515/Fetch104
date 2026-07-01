@@ -28,6 +28,7 @@ export default defineEventHandler(async (event) => {
       event_url,
       professional_score,
       target_type,
+      industry,
       updated_at
     ) VALUES (
       ${sqlValue(body.company)},
@@ -44,6 +45,7 @@ export default defineEventHandler(async (event) => {
       ${sqlValue(body.eventUrl || body.website)},
       ${Number(body.professionalScore) || 0},
       ${sqlValue(body.targetType || '一般活動')},
+      ${sqlValue(body.industry || '活動會展')},
       CURRENT_TIMESTAMP
     )
     ON CONFLICT(source, company, event_url) DO UPDATE SET
@@ -58,6 +60,7 @@ export default defineEventHandler(async (event) => {
       event_name = excluded.event_name,
       professional_score = excluded.professional_score,
       target_type = excluded.target_type,
+      industry = excluded.industry,
       updated_at = CURRENT_TIMESTAMP;
   `)
 

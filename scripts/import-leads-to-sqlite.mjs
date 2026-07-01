@@ -61,6 +61,18 @@ if (!existingColumns.has('target_type')) {
   migrationStatements.push("ALTER TABLE leads ADD COLUMN target_type TEXT NOT NULL DEFAULT '一般活動';")
 }
 
+if (!existingColumns.has('industry')) {
+  migrationStatements.push("ALTER TABLE leads ADD COLUMN industry TEXT NOT NULL DEFAULT '活動會展';")
+}
+
+if (!existingColumns.has('score_reason')) {
+  migrationStatements.push('ALTER TABLE leads ADD COLUMN score_reason TEXT;')
+}
+
+if (!existingColumns.has('official_website')) {
+  migrationStatements.push('ALTER TABLE leads ADD COLUMN official_website TEXT;')
+}
+
 if (migrationStatements.length > 0) {
   result = spawnSync('sqlite3', [dbPath], {
     input: migrationStatements.join('\n'),
