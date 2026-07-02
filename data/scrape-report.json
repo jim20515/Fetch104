@@ -1,10 +1,10 @@
 {
-  "startedAt": "2026-06-26T15:34:31.977Z",
-  "finishedAt": "2026-06-26T15:35:18.166Z",
-  "total": 7,
-  "sources": {
-    "104": "not enabled in this scraper yet",
-    "ACCUPASS": 24,
-    "KKTIX": "Cloudflare challenge; skipped without bypass"
-  }
+  "startedAt": "2026-07-02T06:29:51.030Z",
+  "finishedAt": "2026-07-02T06:30:19.465Z",
+  "total": 8,
+  "source": "ACCUPASS",
+  "keywords": [
+    "公關"
+  ],
+  "profile": "活動會展"
 }

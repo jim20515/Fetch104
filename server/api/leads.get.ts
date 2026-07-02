@@ -4,21 +4,18 @@ interface RawLeadRow {
   id: number
   company: string
   source: string
+  industry: string
   category: string
-  latest_event: string
-  event_count: number
-  fit_score: number
   contact: string
   phone: string
   website: string
+  official_website: string | null
   status: string
-  event_name: string | null
-  event_url: string | null
+  fit_score: number
   professional_score: number
   target_type: string
   score_reason: string | null
-  official_website: string | null
-  industry: string
+  metadata: string
   created_at: string
   updated_at: string
 }
@@ -29,46 +26,40 @@ export default defineEventHandler(() => {
       id,
       company,
       source,
+      industry,
       category,
-      latest_event,
-      event_count,
-      fit_score,
       contact,
       phone,
       website,
+      official_website,
       status,
-      event_name,
-      event_url,
+      fit_score,
       professional_score,
       target_type,
       score_reason,
-      official_website,
-      industry,
+      metadata,
       created_at,
       updated_at
     FROM leads
-    ORDER BY professional_score DESC, fit_score DESC, latest_event DESC, id DESC;
+    ORDER BY professional_score DESC, fit_score DESC, id DESC;
   `)
 
   const leads: LeadRow[] = rows.map((row) => ({
     id: row.id,
     company: row.company,
     source: row.source,
+    industry: row.industry,
     category: row.category,
-    latestEvent: row.latest_event,
-    eventCount: row.event_count,
-    fitScore: row.fit_score,
     contact: row.contact,
     phone: row.phone,
     website: row.website,
+    officialWebsite: row.official_website,
     status: row.status,
-    eventName: row.event_name,
-    eventUrl: row.event_url,
+    fitScore: row.fit_score,
     professionalScore: row.professional_score,
     targetType: row.target_type,
     scoreReason: row.score_reason,
-    officialWebsite: row.official_website,
-    industry: row.industry,
+    metadata: JSON.parse(row.metadata || '{}'),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }))

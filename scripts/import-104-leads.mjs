@@ -13,49 +13,50 @@ const statements = [
 ]
 
 for (const lead of leads) {
+  const metadata = JSON.stringify({
+    eventName: lead.eventName || '104 職缺搜尋',
+    eventUrl: lead.eventUrl || lead.website,
+    latestEvent: lead.latestEvent || '2026-06-26',
+    eventCount: Number(lead.eventCount) || 1
+  })
+
   statements.push(`INSERT INTO leads (
     company,
     source,
+    industry,
     category,
-    latest_event,
-    event_count,
-    fit_score,
     contact,
     phone,
     website,
     status,
-    event_name,
-    event_url,
+    fit_score,
     professional_score,
     target_type,
+    metadata,
     updated_at
   ) VALUES (
     ${sqlValue(lead.company)},
     ${sqlValue(lead.source || '104')},
+    ${sqlValue(lead.industry || '活動會展')},
     ${sqlValue(lead.category || '104 招募訊號')},
-    ${sqlValue(lead.latestEvent || '2026-06-26')},
-    ${Number(lead.eventCount) || 1},
-    ${Number(lead.fitScore) || 0},
     ${sqlValue(lead.contact || '未公開')},
     ${sqlValue(lead.phone || '未公開')},
     ${sqlValue(lead.website)},
     ${sqlValue(lead.status || '待開發')},
-    ${sqlValue(lead.eventName || '104 職缺搜尋')},
-    ${sqlValue(lead.eventUrl || lead.website)},
+    ${Number(lead.fitScore) || 0},
     ${Number(lead.professionalScore) || 0},
     ${sqlValue(lead.targetType || '專業主辦')},
+    ${sqlValue(metadata)},
     CURRENT_TIMESTAMP
   )
-  ON CONFLICT(source, company, event_url) DO UPDATE SET
+  ON CONFLICT(source, company, website) DO UPDATE SET
+    industry = excluded.industry,
     category = excluded.category,
-    latest_event = excluded.latest_event,
-    event_count = excluded.event_count,
     fit_score = excluded.fit_score,
     contact = excluded.contact,
     phone = excluded.phone,
-    website = excluded.website,
     status = excluded.status,
-    event_name = excluded.event_name,
+    metadata = excluded.metadata,
     professional_score = excluded.professional_score,
     target_type = excluded.target_type,
     updated_at = CURRENT_TIMESTAMP;`)

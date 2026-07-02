@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {
   Building2,
-  CalendarDays,
+  Database,
   Download,
   ExternalLink,
   Filter,
@@ -26,20 +26,17 @@ interface Lead {
   company: string
   source: LeadSource
   category: string
-  latestEvent: string
-  eventCount: number
   fitScore: number
   contact: string
   phone: string
   website: string
   status: '待開發' | '已聯絡' | '高意願'
-  eventName?: string
-  eventUrl?: string
   professionalScore?: number
   targetType?: string
   scoreReason?: string | null
   officialWebsite?: string | null
   industry?: string
+  metadata?: Record<string, unknown>
   createdAt?: string
   updatedAt?: string
 }
@@ -56,7 +53,28 @@ interface ScoringProfile {
   proLabel: string
   observableLabel: string
   generalLabel: string
+  metadataSchema: { key: string, label: string }[]
   isBuiltin: boolean
+}
+
+interface SourceInfo {
+  id: string
+  name: string
+  supportsKeywordSearch: boolean
+}
+
+interface ScrapeJob {
+  id: number
+  source: string
+  keywords: string[]
+  profileName: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  progressMessage: string | null
+  foundCount: number
+  savedCount: number
+  errorMessage: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 const { data: leadResponse, pending: leadsPending, error: leadsError, refresh: refreshLeads } = await useFetch<{
@@ -79,14 +97,29 @@ const { data: profileResponse, refresh: refreshProfiles } = await useFetch<{ pro
   default: () => ({ profiles: [] })
 })
 
+const { data: sourceResponse } = await useFetch<{ sources: SourceInfo[] }>('/api/sources', {
+  default: () => ({ sources: [] })
+})
+
+const { data: jobResponse, refresh: refreshJobs } = await useFetch<{ jobs: ScrapeJob[] }>('/api/scrape-jobs', {
+  default: () => ({ jobs: [] })
+})
+
 const leads = computed(() => leadResponse.value?.leads ?? [])
 const sources = computed<LeadSource[]>(() => leadResponse.value?.sources ?? [])
 const industries = computed(() => leadResponse.value?.industries ?? [])
 const profiles = computed(() => profileResponse.value?.profiles ?? [])
 const proLabels = computed(() => new Set(profiles.value.map((profile) => profile.proLabel)))
 const observableLabels = computed(() => new Set(profiles.value.map((profile) => profile.observableLabel)))
+const dataSources = computed(() => sourceResponse.value?.sources ?? [])
+const recentJobs = computed(() => jobResponse.value?.jobs ?? [])
 
-const activeView = ref<'leads' | 'rules'>('leads')
+const metadataLabel = (industry: string | undefined, key: string) => {
+  const profile = profiles.value.find((item) => item.name === industry)
+  return profile?.metadataSchema.find((field) => field.key === key)?.label ?? key
+}
+
+const activeView = ref<'leads' | 'rules' | 'sources'>('leads')
 const keyword = ref('')
 const activeSource = ref<LeadSource | '全部'>('全部')
 const activeIndustry = ref<string | '全部'>('全部')
@@ -120,8 +153,7 @@ const filteredLeads = computed(() => {
       lead.company,
       lead.category,
       lead.contact,
-      lead.source,
-      lead.eventName ?? ''
+      lead.source
     ].some((value) => value.toLowerCase().includes(term))
 
     return matchesKeyword
@@ -175,16 +207,15 @@ watch([keyword, activeSource, activeIndustry, activeTargetType, minScore, pageSi
 const summary = computed(() => {
   const professionalLeads = leads.value.filter((lead) => lead.targetType && proLabels.value.has(lead.targetType)).length
   const observableLeads = leads.value.filter((lead) => lead.targetType && observableLabels.value.has(lead.targetType)).length
-  const averageEvents = leads.value.length
-    ? leads.value.reduce((total, lead) => total + lead.eventCount, 0) / leads.value.length
-    : 0
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+  const recentCount = leads.value.filter((lead) => lead.createdAt && new Date(lead.createdAt).getTime() >= sevenDaysAgo).length
 
   return [
     { label: '名單總數', value: leads.value.length.toLocaleString(), hint: 'SQLite 本機資料' },
     { label: '高潛力名單', value: professionalLeads.toLocaleString(), hint: '優先開發' },
     { label: '可觀察名單', value: observableLeads.toLocaleString(), hint: '需人工確認' },
     { label: '產業設定', value: industries.value.length.toLocaleString(), hint: '評分規則分組' },
-    { label: '平均活動數', value: averageEvents.toFixed(1), hint: '同主辦累計' }
+    { label: '近 7 天新增', value: recentCount.toLocaleString(), hint: '所有產業合計' }
   ]
 })
 
@@ -259,6 +290,55 @@ const deleteProfile = async (name: string) => {
   await $fetch(`/api/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' })
   await refreshProfiles()
 }
+
+const scrapeForm = ref({ source: '', keywords: '', profile: '' })
+const scrapeError = ref('')
+const activeJob = ref<ScrapeJob | null>(null)
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+
+const stopPolling = () => {
+  if (pollTimer) {
+    clearTimeout(pollTimer)
+    pollTimer = null
+  }
+}
+
+const pollJob = async (jobId: number) => {
+  const job = await $fetch<ScrapeJob>(`/api/scrape-jobs/${jobId}`)
+  activeJob.value = job
+
+  if (job.status === 'pending' || job.status === 'running') {
+    pollTimer = setTimeout(() => pollJob(jobId), 2000)
+    return
+  }
+
+  await Promise.all([refreshJobs(), refreshLeads()])
+}
+
+const startScrape = async () => {
+  const keywords = splitKeywords(scrapeForm.value.keywords)
+
+  if (!scrapeForm.value.source || !scrapeForm.value.profile || keywords.length === 0) {
+    scrapeError.value = '請選擇來源、產業設定，並至少輸入一個關鍵字'
+    return
+  }
+
+  scrapeError.value = ''
+  stopPolling()
+
+  try {
+    const { jobId } = await $fetch<{ jobId: number }>('/api/scrape-jobs', {
+      method: 'POST',
+      body: { source: scrapeForm.value.source, keywords, profile: scrapeForm.value.profile }
+    })
+
+    await pollJob(jobId)
+  } catch (error: any) {
+    scrapeError.value = error?.data?.statusMessage || '觸發擷取失敗'
+  }
+}
+
+onUnmounted(stopPolling)
 </script>
 
 <template>
@@ -283,9 +363,13 @@ const deleteProfile = async (name: string) => {
           <Target :size="17" />
           名單探索
         </button>
-        <button class="flex h-10 w-full items-center gap-3 rounded-md px-3 text-sm font-medium text-muted hover:bg-slate-50">
-          <CalendarDays :size="17" />
-          活動來源
+        <button
+          class="flex h-10 w-full items-center gap-3 rounded-md px-3 text-sm font-medium"
+          :class="activeView === 'sources' ? 'bg-slate-100 text-ink' : 'text-muted hover:bg-slate-50'"
+          @click="activeView = 'sources'"
+        >
+          <Database :size="17" />
+          資料來源
         </button>
         <button class="flex h-10 w-full items-center gap-3 rounded-md px-3 text-sm font-medium text-muted hover:bg-slate-50">
           <Building2 :size="17" />
@@ -420,8 +504,7 @@ const deleteProfile = async (name: string) => {
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">公司</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">來源</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">類型</th>
-                  <th class="whitespace-nowrap px-4 py-3 font-semibold">最近活動</th>
-                  <th class="whitespace-nowrap px-4 py-3 font-semibold">活動數</th>
+                  <th class="whitespace-nowrap px-4 py-3 font-semibold">詳細資料</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">符合分數</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">聯絡資訊</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">產業設定</th>
@@ -448,8 +531,17 @@ const deleteProfile = async (name: string) => {
                   </td>
                   <td class="whitespace-nowrap px-4 py-4 text-sm text-ink">{{ lead.source }}</td>
                   <td class="whitespace-nowrap px-4 py-4 text-sm text-muted">{{ lead.category }}</td>
-                  <td class="whitespace-nowrap px-4 py-4 text-sm text-muted">{{ lead.latestEvent }}</td>
-                  <td class="whitespace-nowrap px-4 py-4 text-sm font-medium text-ink">{{ lead.eventCount }}</td>
+                  <td class="px-4 py-4">
+                    <details v-if="lead.metadata && Object.keys(lead.metadata).length" class="text-sm">
+                      <summary class="cursor-pointer text-teal-700">展開</summary>
+                      <ul class="mt-2 space-y-1 text-xs text-muted" style="max-width:220px">
+                        <li v-for="(value, key) in lead.metadata" :key="key">
+                          <span class="text-ink">{{ metadataLabel(lead.industry, String(key)) }}</span>：{{ value }}
+                        </li>
+                      </ul>
+                    </details>
+                    <span v-else class="text-sm text-muted">—</span>
+                  </td>
                   <td class="px-4 py-4">
                     <div class="flex items-center gap-3">
                       <div class="h-2 w-24 rounded-full bg-slate-200">
@@ -504,7 +596,7 @@ const deleteProfile = async (name: string) => {
                   </td>
                 </tr>
                 <tr v-if="paginatedLeads.length === 0">
-                  <td colspan="10" class="px-4 py-12 text-center text-sm text-muted">
+                  <td colspan="9" class="px-4 py-12 text-center text-sm text-muted">
                     目前沒有符合條件的名單
                   </td>
                 </tr>
@@ -595,18 +687,18 @@ const deleteProfile = async (name: string) => {
             <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
               <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">company</span>
               <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">source</span>
-              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">event_url</span>
+              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">industry</span>
               <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">website</span>
               <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">email</span>
               <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">phone</span>
               <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">fit_score</span>
-              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">last_event_at</span>
+              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">metadata</span>
             </div>
           </div>
         </section>
       </div>
 
-      <div v-else class="px-4 py-6 sm:px-6 lg:px-8">
+      <div v-else-if="activeView === 'rules'" class="px-4 py-6 sm:px-6 lg:px-8">
         <section class="rounded-md border border-line bg-white p-5 shadow-soft">
           <h2 class="text-base font-semibold text-ink">產業評分規則</h2>
           <p class="mt-1 text-sm text-muted">
@@ -759,6 +851,120 @@ const deleteProfile = async (name: string) => {
                 {{ profileSaving ? '儲存中…' : '儲存設定檔' }}
               </button>
             </div>
+          </div>
+        </section>
+      </div>
+
+      <div v-else class="px-4 py-6 sm:px-6 lg:px-8">
+        <section class="rounded-md border border-line bg-white p-5 shadow-soft">
+          <h2 class="text-base font-semibold text-ink">名單擷取</h2>
+          <p class="mt-1 text-sm text-muted">選擇來源、輸入關鍵字，套用一組產業評分規則，系統會在背景擷取並自動評分存入名單。</p>
+
+          <div class="mt-4 grid gap-4">
+            <div class="grid gap-4 sm:grid-cols-2">
+              <label class="block text-sm">
+                <span class="text-muted">資料來源</span>
+                <select
+                  v-model="scrapeForm.source"
+                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                >
+                  <option value="" disabled>請選擇來源</option>
+                  <option
+                    v-for="source in dataSources"
+                    :key="source.id"
+                    :value="source.id"
+                  >
+                    {{ source.name }}
+                  </option>
+                </select>
+              </label>
+              <label class="block text-sm">
+                <span class="text-muted">產業評分設定</span>
+                <select
+                  v-model="scrapeForm.profile"
+                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                >
+                  <option value="" disabled>請選擇設定檔</option>
+                  <option
+                    v-for="profile in profiles"
+                    :key="profile.id"
+                    :value="profile.name"
+                  >
+                    {{ profile.name }}
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <label class="block text-sm">
+              <span class="text-muted">關鍵字（逗號或頓號分隔，會用來搜尋來源網站）</span>
+              <textarea
+                v-model="scrapeForm.keywords"
+                rows="2"
+                class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-teal"
+                placeholder="例如：公關、整合行銷、活動企劃"
+              />
+            </label>
+
+            <p v-if="scrapeError" class="text-sm text-red-600">{{ scrapeError }}</p>
+
+            <div>
+              <button
+                class="inline-flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                :disabled="activeJob?.status === 'pending' || activeJob?.status === 'running'"
+                @click="startScrape"
+              >
+                {{ (activeJob?.status === 'pending' || activeJob?.status === 'running') ? '擷取中…' : '開始擷取' }}
+              </button>
+            </div>
+
+            <div
+              v-if="activeJob"
+              class="rounded-md border border-line bg-slate-50 p-4 text-sm"
+            >
+              <div class="flex items-center justify-between">
+                <span class="font-medium text-ink">工作 #{{ activeJob.id }}（{{ activeJob.status }}）</span>
+                <span class="text-muted">找到 {{ activeJob.foundCount }} 筆，存入 {{ activeJob.savedCount }} 筆</span>
+              </div>
+              <p class="mt-1 text-muted">{{ activeJob.errorMessage || activeJob.progressMessage }}</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="mt-6 rounded-md border border-line bg-white shadow-soft">
+          <div class="border-b border-line p-4">
+            <h2 class="text-base font-semibold text-ink">最近擷取紀錄</h2>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full min-w-[900px] border-collapse text-left text-sm">
+              <thead>
+                <tr class="border-b border-line bg-slate-50 text-xs uppercase text-muted">
+                  <th class="whitespace-nowrap px-4 py-3 font-semibold">來源</th>
+                  <th class="whitespace-nowrap px-4 py-3 font-semibold">關鍵字</th>
+                  <th class="whitespace-nowrap px-4 py-3 font-semibold">產業設定</th>
+                  <th class="whitespace-nowrap px-4 py-3 font-semibold">狀態</th>
+                  <th class="whitespace-nowrap px-4 py-3 font-semibold">找到 / 存入</th>
+                  <th class="whitespace-nowrap px-4 py-3 font-semibold">時間</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="job in recentJobs"
+                  :key="job.id"
+                  class="border-b border-line last:border-0"
+                >
+                  <td class="whitespace-nowrap px-4 py-3 text-ink">{{ job.source }}</td>
+                  <td class="px-4 py-3 text-muted">{{ job.keywords.join('、') }}</td>
+                  <td class="whitespace-nowrap px-4 py-3 text-muted">{{ job.profileName }}</td>
+                  <td class="whitespace-nowrap px-4 py-3 text-muted">{{ job.status }}</td>
+                  <td class="whitespace-nowrap px-4 py-3 text-muted">{{ job.foundCount }} / {{ job.savedCount }}</td>
+                  <td class="whitespace-nowrap px-4 py-3 text-muted">{{ job.updatedAt }}</td>
+                </tr>
+                <tr v-if="recentJobs.length === 0">
+                  <td colspan="6" class="px-4 py-12 text-center text-muted">尚無擷取紀錄</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </section>
       </div>

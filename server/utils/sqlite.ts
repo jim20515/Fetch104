@@ -8,21 +8,18 @@ export interface LeadRow {
   id: number
   company: string
   source: string
+  industry: string
   category: string
-  latestEvent: string
-  eventCount: number
-  fitScore: number
   contact: string
   phone: string
   website: string
+  officialWebsite: string | null
   status: string
-  eventName: string | null
-  eventUrl: string | null
+  fitScore: number
   professionalScore: number
   targetType: string
   scoreReason: string | null
-  officialWebsite: string | null
-  industry: string
+  metadata: Record<string, unknown>
   createdAt: string
   updatedAt: string
 }
@@ -39,6 +36,7 @@ export interface ScoringProfileRow {
   proLabel: string
   observableLabel: string
   generalLabel: string
+  metadataSchema: { key: string, label: string }[]
   isBuiltin: boolean
 }
 

@@ -33,6 +33,12 @@ const BUILTIN_PROFILES = [
     proLabel: '專業主辦',
     observableLabel: '可觀察',
     generalLabel: '一般活動',
+    metadataSchema: [
+      { key: 'eventName', label: '活動名稱' },
+      { key: 'eventUrl', label: '活動連結' },
+      { key: 'latestEvent', label: '最近活動' },
+      { key: 'eventCount', label: '活動數' }
+    ],
     isBuiltin: 1
   },
   {
@@ -46,6 +52,7 @@ const BUILTIN_PROFILES = [
     proLabel: '專業廠商',
     observableLabel: '可觀察',
     generalLabel: '一般名單',
+    metadataSchema: [],
     isBuiltin: 1
   }
 ]
@@ -64,11 +71,19 @@ export function ensureScoringProfilesTable(dbPath) {
       pro_label TEXT NOT NULL DEFAULT '專業主辦',
       observable_label TEXT NOT NULL DEFAULT '可觀察',
       general_label TEXT NOT NULL DEFAULT '一般活動',
+      metadata_schema TEXT NOT NULL DEFAULT '[]',
       is_builtin INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `)
+
+  const columnsOutput = runSqlite(dbPath, undefined, 'PRAGMA table_info(scoring_profiles);')
+  const existingColumns = new Set(columnsOutput.split('\n').map((line) => line.split('|')[1]).filter(Boolean))
+
+  if (!existingColumns.has('metadata_schema')) {
+    runSqlite(dbPath, undefined, "ALTER TABLE scoring_profiles ADD COLUMN metadata_schema TEXT NOT NULL DEFAULT '[]';")
+  }
 
   const existing = queryJson(dbPath, 'SELECT name FROM scoring_profiles;').map((row) => row.name)
 
@@ -78,7 +93,7 @@ export function ensureScoringProfilesTable(dbPath) {
     runSqlite(dbPath, undefined, `
       INSERT INTO scoring_profiles (
         name, description, company_keywords, business_keywords, exclude_keywords,
-        pro_threshold, observable_threshold, pro_label, observable_label, general_label, is_builtin
+        pro_threshold, observable_threshold, pro_label, observable_label, general_label, metadata_schema, is_builtin
       ) VALUES (
         '${escapeSql(profile.name)}',
         '${escapeSql(profile.description)}',
@@ -90,6 +105,7 @@ export function ensureScoringProfilesTable(dbPath) {
         '${escapeSql(profile.proLabel)}',
         '${escapeSql(profile.observableLabel)}',
         '${escapeSql(profile.generalLabel)}',
+        '${escapeSql(JSON.stringify(profile.metadataSchema || []))}',
         1
       );
     `)
@@ -109,6 +125,7 @@ function rowToProfile(row) {
     proLabel: row.pro_label,
     observableLabel: row.observable_label,
     generalLabel: row.general_label,
+    metadataSchema: JSON.parse(row.metadata_schema || '[]'),
     isBuiltin: !!row.is_builtin
   }
 }
@@ -144,7 +161,7 @@ export function upsertProfile(dbPath, profile) {
   runSqlite(dbPath, undefined, `
     INSERT INTO scoring_profiles (
       name, description, company_keywords, business_keywords, exclude_keywords,
-      pro_threshold, observable_threshold, pro_label, observable_label, general_label, is_builtin, updated_at
+      pro_threshold, observable_threshold, pro_label, observable_label, general_label, metadata_schema, is_builtin, updated_at
     ) VALUES (
       '${escapeSql(profile.name)}',
       '${escapeSql(profile.description || '')}',
@@ -156,6 +173,7 @@ export function upsertProfile(dbPath, profile) {
       '${escapeSql(profile.proLabel || '專業主辦')}',
       '${escapeSql(profile.observableLabel || '可觀察')}',
       '${escapeSql(profile.generalLabel || '一般活動')}',
+      '${escapeSql(JSON.stringify(profile.metadataSchema || []))}',
       0,
       CURRENT_TIMESTAMP
     )
@@ -169,6 +187,7 @@ export function upsertProfile(dbPath, profile) {
       pro_label = excluded.pro_label,
       observable_label = excluded.observable_label,
       general_label = excluded.general_label,
+      metadata_schema = excluded.metadata_schema,
       updated_at = CURRENT_TIMESTAMP
     WHERE is_builtin = 0;
   `)
@@ -193,9 +212,9 @@ function buildPattern(keywords) {
   return new RegExp(list.map(escapeRegExp).join('|'), 'i')
 }
 
-export function scoreWithProfile(profile, { company, category = '', eventName = '', eventCount = 1 }) {
+export function scoreWithProfile(profile, { company, category = '', businessText = '', signalCount = 1 }) {
   const companyText = `${company}`
-  const bizText = `${category} ${eventName}`
+  const bizText = `${category} ${businessText}`
   const text = `${companyText} ${bizText}`
 
   const companyPattern = buildPattern(profile.companyKeywords)
@@ -205,7 +224,7 @@ export function scoreWithProfile(profile, { company, category = '', eventName = 
   let score = 0
 
   if (companyPattern?.test(companyText)) score += 45
-  if (eventCount > 1) score += Math.min(40, 22 + eventCount * 5)
+  if (signalCount > 1) score += Math.min(40, 22 + signalCount * 5)
   if (businessPattern?.test(bizText)) score += 18
   if (excludePattern?.test(text)) score -= 28
 

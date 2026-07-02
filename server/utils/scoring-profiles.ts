@@ -1,5 +1,10 @@
 import { escapeSql, executeSql, queryJson, type ScoringProfileRow } from './sqlite'
 
+interface MetadataFieldSeed {
+  key: string
+  label: string
+}
+
 interface BuiltinProfileSeed {
   name: string
   description: string
@@ -11,6 +16,7 @@ interface BuiltinProfileSeed {
   proLabel: string
   observableLabel: string
   generalLabel: string
+  metadataSchema: MetadataFieldSeed[]
 }
 
 const BUILTIN_PROFILES: BuiltinProfileSeed[] = [
@@ -24,7 +30,13 @@ const BUILTIN_PROFILES: BuiltinProfileSeed[] = [
     observableThreshold: 45,
     proLabel: '專業主辦',
     observableLabel: '可觀察',
-    generalLabel: '一般活動'
+    generalLabel: '一般活動',
+    metadataSchema: [
+      { key: 'eventName', label: '活動名稱' },
+      { key: 'eventUrl', label: '活動連結' },
+      { key: 'latestEvent', label: '最近活動' },
+      { key: 'eventCount', label: '活動數' }
+    ]
   },
   {
     name: '資訊科技',
@@ -36,7 +48,8 @@ const BUILTIN_PROFILES: BuiltinProfileSeed[] = [
     observableThreshold: 45,
     proLabel: '專業廠商',
     observableLabel: '可觀察',
-    generalLabel: '一般名單'
+    generalLabel: '一般名單',
+    metadataSchema: []
   }
 ]
 
@@ -54,11 +67,18 @@ export const ensureScoringProfilesTable = () => {
       pro_label TEXT NOT NULL DEFAULT '專業主辦',
       observable_label TEXT NOT NULL DEFAULT '可觀察',
       general_label TEXT NOT NULL DEFAULT '一般活動',
+      metadata_schema TEXT NOT NULL DEFAULT '[]',
       is_builtin INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `)
+
+  const existingColumns = new Set(queryJson<{ name: string }>('PRAGMA table_info(scoring_profiles);').map((row) => row.name))
+
+  if (!existingColumns.has('metadata_schema')) {
+    executeSql("ALTER TABLE scoring_profiles ADD COLUMN metadata_schema TEXT NOT NULL DEFAULT '[]';")
+  }
 
   const existing = queryJson<{ name: string }>('SELECT name FROM scoring_profiles;').map((row) => row.name)
 
@@ -68,7 +88,7 @@ export const ensureScoringProfilesTable = () => {
     executeSql(`
       INSERT INTO scoring_profiles (
         name, description, company_keywords, business_keywords, exclude_keywords,
-        pro_threshold, observable_threshold, pro_label, observable_label, general_label, is_builtin
+        pro_threshold, observable_threshold, pro_label, observable_label, general_label, metadata_schema, is_builtin
       ) VALUES (
         '${escapeSql(profile.name)}',
         '${escapeSql(profile.description)}',
@@ -80,6 +100,7 @@ export const ensureScoringProfilesTable = () => {
         '${escapeSql(profile.proLabel)}',
         '${escapeSql(profile.observableLabel)}',
         '${escapeSql(profile.generalLabel)}',
+        '${escapeSql(JSON.stringify(profile.metadataSchema))}',
         1
       );
     `)
@@ -98,6 +119,7 @@ interface RawProfileRow {
   pro_label: string
   observable_label: string
   general_label: string
+  metadata_schema: string
   is_builtin: number
 }
 
@@ -113,6 +135,7 @@ const rowToProfile = (row: RawProfileRow): ScoringProfileRow => ({
   proLabel: row.pro_label,
   observableLabel: row.observable_label,
   generalLabel: row.general_label,
+  metadataSchema: JSON.parse(row.metadata_schema || '[]'),
   isBuiltin: !!row.is_builtin
 })
 
@@ -133,6 +156,7 @@ export interface ScoringProfileInput {
   proLabel?: string
   observableLabel?: string
   generalLabel?: string
+  metadataSchema?: { key: string, label: string }[]
 }
 
 export const upsertScoringProfile = (profile: ScoringProfileInput) => {
@@ -146,7 +170,7 @@ export const upsertScoringProfile = (profile: ScoringProfileInput) => {
   executeSql(`
     INSERT INTO scoring_profiles (
       name, description, company_keywords, business_keywords, exclude_keywords,
-      pro_threshold, observable_threshold, pro_label, observable_label, general_label, is_builtin, updated_at
+      pro_threshold, observable_threshold, pro_label, observable_label, general_label, metadata_schema, is_builtin, updated_at
     ) VALUES (
       '${escapeSql(profile.name)}',
       '${escapeSql(profile.description || '')}',
@@ -158,6 +182,7 @@ export const upsertScoringProfile = (profile: ScoringProfileInput) => {
       '${escapeSql(profile.proLabel || '專業主辦')}',
       '${escapeSql(profile.observableLabel || '可觀察')}',
       '${escapeSql(profile.generalLabel || '一般活動')}',
+      '${escapeSql(JSON.stringify(profile.metadataSchema || []))}',
       0,
       CURRENT_TIMESTAMP
     )
@@ -171,6 +196,7 @@ export const upsertScoringProfile = (profile: ScoringProfileInput) => {
       pro_label = excluded.pro_label,
       observable_label = excluded.observable_label,
       general_label = excluded.general_label,
+      metadata_schema = excluded.metadata_schema,
       updated_at = CURRENT_TIMESTAMP
     WHERE is_builtin = 0;
   `)

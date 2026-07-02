@@ -1,6 +1,4 @@
-import { escapeSql, executeSql } from '../utils/sqlite'
-
-const sqlValue = (value: unknown) => value == null || value === '' ? 'NULL' : `'${escapeSql(value)}'`
+import { upsertLead } from '../utils/leads'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody(event)
@@ -12,57 +10,22 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  executeSql(`
-    INSERT INTO leads (
-      company,
-      source,
-      category,
-      latest_event,
-      event_count,
-      fit_score,
-      contact,
-      phone,
-      website,
-      status,
-      event_name,
-      event_url,
-      professional_score,
-      target_type,
-      industry,
-      updated_at
-    ) VALUES (
-      ${sqlValue(body.company)},
-      ${sqlValue(body.source)},
-      ${sqlValue(body.category || '活動報名')},
-      ${sqlValue(body.latestEvent || '未標示')},
-      ${Number(body.eventCount) || 1},
-      ${Number(body.fitScore) || 0},
-      ${sqlValue(body.contact || '未公開')},
-      ${sqlValue(body.phone || '未公開')},
-      ${sqlValue(body.website)},
-      ${sqlValue(body.status || '待開發')},
-      ${sqlValue(body.eventName)},
-      ${sqlValue(body.eventUrl || body.website)},
-      ${Number(body.professionalScore) || 0},
-      ${sqlValue(body.targetType || '一般活動')},
-      ${sqlValue(body.industry || '活動會展')},
-      CURRENT_TIMESTAMP
-    )
-    ON CONFLICT(source, company, event_url) DO UPDATE SET
-      category = excluded.category,
-      latest_event = excluded.latest_event,
-      event_count = excluded.event_count,
-      fit_score = excluded.fit_score,
-      contact = excluded.contact,
-      phone = excluded.phone,
-      website = excluded.website,
-      status = excluded.status,
-      event_name = excluded.event_name,
-      professional_score = excluded.professional_score,
-      target_type = excluded.target_type,
-      industry = excluded.industry,
-      updated_at = CURRENT_TIMESTAMP;
-  `)
+  upsertLead({
+    company: body.company,
+    source: body.source,
+    industry: body.industry || '活動會展',
+    category: body.category,
+    contact: body.contact,
+    phone: body.phone,
+    website: body.website,
+    officialWebsite: body.officialWebsite,
+    status: body.status,
+    fitScore: body.fitScore,
+    professionalScore: body.professionalScore,
+    targetType: body.targetType || '一般活動',
+    scoreReason: body.scoreReason,
+    metadata: body.metadata
+  })
 
   return { ok: true }
 })
