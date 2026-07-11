@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import {
+  AlertCircle,
   Building2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Database,
   Download,
   ExternalLink,
   Filter,
-  ChevronLeft,
-  ChevronRight,
   Mail,
   Phone,
   Radar,
@@ -16,7 +18,8 @@ import {
   Sparkles,
   Target,
   Trash2,
-  Upload
+  Upload,
+  X
 } from '@lucide/vue'
 
 type LeadSource = string
@@ -121,29 +124,18 @@ const metadataLabel = (industry: string | undefined, key: string) => {
 
 const activeView = ref<'leads' | 'rules' | 'sources'>('leads')
 const keyword = ref('')
-const activeSource = ref<LeadSource | '全部'>('全部')
-const activeIndustry = ref<string | '全部'>('全部')
-const activeTargetType = ref<string>('全部')
+const activeSource = ref<string[]>([])
+const activeIndustry = ref<string[]>([])
+const filterSourceOpen = ref(false)
+const filterIndustryOpen = ref(false)
+const filterSourceRef = ref<HTMLElement | null>(null)
+const filterIndustryRef = ref<HTMLElement | null>(null)
+const activeTargetType = ref<string>('')
 const minScore = ref(45)
 const currentPage = ref(1)
 const pageSize = ref(8)
 const pageSizeOptions = [5, 8, 12, 20]
 
-const targetTypeOptions = computed(() => {
-  const present = new Set(leads.value.map((lead) => lead.targetType).filter(Boolean) as string[])
-  const ordered: string[] = []
-
-  for (const profile of profiles.value) {
-    if (present.has(profile.proLabel) && !ordered.includes(profile.proLabel)) ordered.push(profile.proLabel)
-    if (present.has(profile.observableLabel) && !ordered.includes(profile.observableLabel)) ordered.push(profile.observableLabel)
-  }
-
-  for (const type of present) {
-    if (!ordered.includes(type)) ordered.push(type)
-  }
-
-  return ['全部', ...ordered]
-})
 
 const filteredLeads = computed(() => {
   const term = keyword.value.trim().toLowerCase()
@@ -157,9 +149,9 @@ const filteredLeads = computed(() => {
     ].some((value) => value.toLowerCase().includes(term))
 
     return matchesKeyword
-      && (activeSource.value === '全部' || lead.source === activeSource.value)
-      && (activeIndustry.value === '全部' || lead.industry === activeIndustry.value)
-      && (activeTargetType.value === '全部' || lead.targetType === activeTargetType.value)
+      && (activeSource.value.length === 0 || activeSource.value.includes(lead.source))
+      && (activeIndustry.value.length === 0 || activeIndustry.value.includes(lead.industry ?? ''))
+      && (!activeTargetType.value || (lead.targetType ?? '').includes(activeTargetType.value))
       && (lead.professionalScore ?? lead.fitScore) >= minScore.value
   })
 })
@@ -291,54 +283,135 @@ const deleteProfile = async (name: string) => {
   await refreshProfiles()
 }
 
-const scrapeForm = ref({ source: '', keywords: '', profile: '' })
+const scrapeForm = ref({ sources: [] as string[], keywords: '', profile: '' })
+const sourceDropdownOpen = ref(false)
+
+const SOURCE_KEYWORD_HINTS: Record<string, string> = {
+  'salary.tw': '抓取固定的「廣告行銷公關業」頁面，關鍵字用來過濾公司名稱，名字含關鍵字的才留下',
+  '104': '以關鍵字搜尋 104 職缺，從結果頁抓出刊登職缺的公司名稱',
+  'gcis': '以關鍵字搜尋全國工商登記，每個關鍵字是一次獨立查詢，找名稱含該詞的公司',
+  'yourator': '抓取 Yourator 上所有公司，以關鍵字過濾公司名稱或標籤（如整合行銷、公關顧問）',
+  '518': '以關鍵字搜尋 518 熊班人力銀行職缺，從結果頁抓出刊登職缺的公司名稱',
+}
+
+const selectedSourceHints = computed(() =>
+  scrapeForm.value.sources
+    .map((id) => {
+      const src = dataSources.value.find((s) => s.id === id)
+      const hint = SOURCE_KEYWORD_HINTS[id]
+      return src && hint ? { name: src.name, hint } : null
+    })
+    .filter(Boolean) as { name: string; hint: string }[]
+)
+
 const scrapeError = ref('')
-const activeJob = ref<ScrapeJob | null>(null)
-let pollTimer: ReturnType<typeof setTimeout> | null = null
+const activeJobs = ref<ScrapeJob[]>([])
+let pollTimers: Map<number, ReturnType<typeof setTimeout>> = new Map()
 
 const stopPolling = () => {
-  if (pollTimer) {
-    clearTimeout(pollTimer)
-    pollTimer = null
-  }
+  pollTimers.forEach((t) => clearTimeout(t))
+  pollTimers.clear()
 }
 
 const pollJob = async (jobId: number) => {
   const job = await $fetch<ScrapeJob>(`/api/scrape-jobs/${jobId}`)
-  activeJob.value = job
+  const idx = activeJobs.value.findIndex((j) => j.id === jobId)
+  if (idx >= 0) activeJobs.value[idx] = job
+  else activeJobs.value.push(job)
 
   if (job.status === 'pending' || job.status === 'running') {
-    pollTimer = setTimeout(() => pollJob(jobId), 2000)
+    const t = setTimeout(() => pollJob(jobId), 2000)
+    pollTimers.set(jobId, t)
     return
   }
 
-  await Promise.all([refreshJobs(), refreshLeads()])
+  pollTimers.delete(jobId)
+  if (pollTimers.size === 0) {
+    await Promise.all([refreshJobs(), refreshLeads()])
+  }
 }
+
+const isRunning = computed(() =>
+  activeJobs.value.some((j) => j.status === 'pending' || j.status === 'running')
+)
 
 const startScrape = async () => {
   const keywords = splitKeywords(scrapeForm.value.keywords)
 
-  if (!scrapeForm.value.source || !scrapeForm.value.profile || keywords.length === 0) {
-    scrapeError.value = '請選擇來源、產業設定，並至少輸入一個關鍵字'
+  if (scrapeForm.value.sources.length === 0) {
+    scrapeError.value = '請至少選擇一個資料來源'
+    return
+  }
+  if (!scrapeForm.value.profile) {
+    scrapeError.value = '請選擇產業評分設定'
+    return
+  }
+  if (keywords.length === 0) {
+    scrapeError.value = '請輸入至少一個關鍵字'
     return
   }
 
   scrapeError.value = ''
   stopPolling()
+  activeJobs.value = []
 
-  try {
-    const { jobId } = await $fetch<{ jobId: number }>('/api/scrape-jobs', {
-      method: 'POST',
-      body: { source: scrapeForm.value.source, keywords, profile: scrapeForm.value.profile }
-    })
-
-    await pollJob(jobId)
-  } catch (error: any) {
-    scrapeError.value = error?.data?.statusMessage || '觸發擷取失敗'
+  for (const source of scrapeForm.value.sources) {
+    try {
+      const { jobId } = await $fetch<{ jobId: number }>('/api/scrape-jobs', {
+        method: 'POST',
+        body: { source, keywords, profile: scrapeForm.value.profile }
+      })
+      activeJobs.value.push({ id: jobId, source, status: 'pending', progressMessage: '等待中', foundCount: 0, savedCount: 0, keywords, profileName: scrapeForm.value.profile, errorMessage: null, createdAt: '', updatedAt: '' })
+      pollJob(jobId)
+    } catch (error: any) {
+      scrapeError.value = error?.data?.statusMessage || `${source} 觸發失敗`
+    }
   }
 }
 
 onUnmounted(stopPolling)
+
+const showBlockedModal = ref(false)
+
+const BLOCKED_SOURCES = [
+  {
+    name: '1111 人力銀行',
+    url: 'https://www.1111.com.tw',
+    reason: '採用 JavaScript 單頁渲染，搜尋結果須在瀏覽器執行後才出現，伺服器端無法直接抓取。'
+  },
+  {
+    name: '台灣黃頁（中華黃頁 iyp.com.tw）',
+    url: 'https://www.iyp.com.tw',
+    reason: '採用 JavaScript 單頁渲染，且搜尋 API 需要授權金鑰，伺服器端無法直接抓取。'
+  },
+  {
+    name: '台灣就業通（taiwanjobs.gov.tw）',
+    url: 'https://job.taiwanjobs.gov.tw',
+    reason: '職缺資料透過 JavaScript 動態載入，伺服器端無法抓取。且平台以政府補助職缺、中高齡就業為主，與目標產業重疊度低。'
+  },
+  {
+    name: 'yes123 求職網',
+    url: 'https://www.yes123.com.tw',
+    reason: '職缺搜尋結果採 JavaScript 渲染，伺服器端抓取到的僅為廣告橫幅，非實際職缺資料。'
+  },
+  {
+    name: 'Adecco 藝珂人事',
+    url: 'https://www.adecco.com/zh-tw',
+    reason: '人力派遣公司，職缺為代替客戶刊登且不公開雇主名稱，無法作為 B2B 名單來源。網站同時採 JavaScript 渲染。'
+  }
+]
+
+function handleClickOutside(e: MouseEvent) {
+  if (filterSourceRef.value && !filterSourceRef.value.contains(e.target as Node)) {
+    filterSourceOpen.value = false
+  }
+  if (filterIndustryRef.value && !filterIndustryRef.value.contains(e.target as Node)) {
+    filterIndustryOpen.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('click', handleClickOutside))
+onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 </script>
 
 <template>
@@ -396,17 +469,24 @@ onUnmounted(stopPolling)
 
           <div class="flex items-center gap-2">
             <button
-              class="grid size-10 place-items-center rounded-md border border-line bg-white text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+              class="inline-flex h-10 items-center gap-2 rounded-lg border border-line bg-white px-3 text-sm text-muted hover:text-ink"
+              @click="showBlockedModal = true"
+            >
+              <AlertCircle :size="15" />
+              無法擷取來源清單
+            </button>
+            <button
+              class="grid size-10 place-items-center rounded-lg border border-line bg-white text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
               title="重新整理"
               :disabled="leadsPending"
               @click="refreshLeads"
             >
               <RefreshCw :size="18" :class="leadsPending ? 'animate-spin' : ''" />
             </button>
-            <button class="grid size-10 place-items-center rounded-md border border-line bg-white text-muted hover:text-ink" title="匯入名單">
+            <button class="grid size-10 place-items-center rounded-lg border border-line bg-white text-muted hover:text-ink" title="匯入名單">
               <Upload :size="18" />
             </button>
-            <button class="inline-flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white hover:bg-slate-800">
+            <button class="inline-flex h-10 items-center gap-2 rounded-lg bg-ink px-4 text-sm font-medium text-white hover:bg-slate-800">
               <Download :size="17" />
               匯出 CSV
             </button>
@@ -419,7 +499,7 @@ onUnmounted(stopPolling)
           <div
             v-for="item in summary"
             :key="item.label"
-            class="rounded-md border border-line bg-white p-4 shadow-soft"
+            class="rounded-xl border border-line bg-white p-4"
           >
             <p class="text-sm text-muted">{{ item.label }}</p>
             <div class="mt-2 flex items-end justify-between gap-4">
@@ -436,74 +516,116 @@ onUnmounted(stopPolling)
           SQLite 資料讀取失敗，請確認已執行 npm run db:import。
         </div>
 
-        <section class="mt-6 rounded-md border border-line bg-white shadow-soft">
-          <div class="grid gap-3 border-b border-line p-4 xl:grid-cols-[1fr_auto_auto_auto_auto]">
-            <label class="relative block">
-              <Search class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" :size="18" />
-              <input
-                v-model="keyword"
-                class="h-11 w-full rounded-md border border-line bg-white pl-10 pr-3 text-sm outline-none ring-teal/20 placeholder:text-slate-400 focus:border-teal focus:ring-4"
-                placeholder="搜尋公司、類型、Email 或來源"
-              >
-            </label>
+        <section class="mt-6 rounded-xl border border-line bg-white p-5">
+          <h2 class="text-base font-semibold text-ink">條件篩選</h2>
+          <p class="mt-1 text-sm text-muted">依來源、產業、名單類型與符合分數過濾名單。</p>
 
-            <div class="flex overflow-x-auto rounded-md border border-line bg-slate-50 p-1">
-              <button
-                v-for="source in ['全部', ...sources]"
-                :key="source"
-                class="h-9 whitespace-nowrap rounded px-3 text-sm font-medium"
-                :class="activeSource === source ? 'bg-white text-ink shadow-sm' : 'text-muted hover:text-ink'"
-                @click="activeSource = source"
-              >
-                {{ source }}
-              </button>
+          <div class="mt-4 grid gap-4">
+            <div class="grid gap-4 sm:grid-cols-2">
+              <label class="block text-sm">
+                <span class="text-muted">搜尋</span>
+                <div class="relative mt-1">
+                  <Search class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" :size="18" />
+                  <input
+                    v-model="keyword"
+                    class="h-10 w-full rounded-lg border border-line bg-white pl-10 pr-3 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
+                    placeholder="搜尋公司、類型、Email 或來源"
+                  >
+                </div>
+              </label>
+
+              <label class="block text-sm">
+                <span class="text-muted">符合分數下限：<strong class="text-ink">{{ minScore }}</strong></span>
+                <input
+                  v-model="minScore"
+                  class="mt-2 w-full accent-teal"
+                  type="range"
+                  min="0"
+                  max="95"
+                >
+              </label>
             </div>
 
-            <div class="flex overflow-x-auto rounded-md border border-line bg-slate-50 p-1">
-              <button
-                v-for="industry in ['全部', ...industries]"
-                :key="industry"
-                class="h-9 whitespace-nowrap rounded px-3 text-sm font-medium"
-                :class="activeIndustry === industry ? 'bg-white text-ink shadow-sm' : 'text-muted hover:text-ink'"
-                @click="activeIndustry = industry"
-              >
-                {{ industry }}
-              </button>
-            </div>
+            <div class="grid gap-4 sm:grid-cols-3">
+              <div ref="filterSourceRef" class="relative text-sm">
+                <span class="text-muted">資料來源</span>
+                <button
+                  type="button"
+                  class="mt-1 flex h-10 w-full items-center justify-between rounded-lg border border-line bg-white px-3 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
+                  @click.stop="filterSourceOpen = !filterSourceOpen; filterIndustryOpen = false"
+                >
+                  <span class="truncate" :class="activeSource.length === 0 ? 'text-muted' : 'text-ink'">
+                    {{ activeSource.length === 0 ? '全部來源' : activeSource.join('、') }}
+                  </span>
+                  <ChevronDown :size="15" class="ml-2 shrink-0 text-muted transition-transform" :class="filterSourceOpen ? 'rotate-180' : ''" />
+                </button>
+                <div
+                  v-if="filterSourceOpen"
+                  class="absolute z-20 mt-1 w-full min-w-max rounded-lg border border-line bg-white shadow-lg"
+                >
+                  <label
+                    v-for="source in sources"
+                    :key="source"
+                    class="flex cursor-pointer items-center gap-2.5 px-3 py-2 hover:bg-slate-50"
+                  >
+                    <input type="checkbox" :value="source" v-model="activeSource" class="accent-teal">
+                    <span class="text-sm text-ink">{{ source }}</span>
+                  </label>
+                  <div v-if="activeSource.length > 0" class="border-t border-line px-3 py-2">
+                    <button type="button" class="text-xs text-coral hover:underline" @click="activeSource = []">清除選擇</button>
+                  </div>
+                </div>
+              </div>
 
-            <div class="flex overflow-x-auto rounded-md border border-line bg-slate-50 p-1">
-              <button
-                v-for="targetType in targetTypeOptions"
-                :key="targetType"
-                class="h-9 whitespace-nowrap rounded px-3 text-sm font-medium"
-                :class="activeTargetType === targetType ? 'bg-white text-ink shadow-sm' : 'text-muted hover:text-ink'"
-                @click="activeTargetType = targetType"
-              >
-                {{ targetType }}
-              </button>
-            </div>
+              <div ref="filterIndustryRef" class="relative text-sm">
+                <span class="text-muted">產業</span>
+                <button
+                  type="button"
+                  class="mt-1 flex h-10 w-full items-center justify-between rounded-lg border border-line bg-white px-3 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
+                  @click.stop="filterIndustryOpen = !filterIndustryOpen; filterSourceOpen = false"
+                >
+                  <span class="truncate" :class="activeIndustry.length === 0 ? 'text-muted' : 'text-ink'">
+                    {{ activeIndustry.length === 0 ? '全部產業' : activeIndustry.join('、') }}
+                  </span>
+                  <ChevronDown :size="15" class="ml-2 shrink-0 text-muted transition-transform" :class="filterIndustryOpen ? 'rotate-180' : ''" />
+                </button>
+                <div
+                  v-if="filterIndustryOpen"
+                  class="absolute z-20 mt-1 w-full min-w-max rounded-lg border border-line bg-white shadow-lg"
+                >
+                  <label
+                    v-for="industry in industries"
+                    :key="industry"
+                    class="flex cursor-pointer items-center gap-2.5 px-3 py-2 hover:bg-slate-50"
+                  >
+                    <input type="checkbox" :value="industry" v-model="activeIndustry" class="accent-teal">
+                    <span class="text-sm text-ink">{{ industry }}</span>
+                  </label>
+                  <div v-if="activeIndustry.length > 0" class="border-t border-line px-3 py-2">
+                    <button type="button" class="text-xs text-coral hover:underline" @click="activeIndustry = []">清除選擇</button>
+                  </div>
+                </div>
+              </div>
 
-            <label class="flex h-11 items-center gap-3 rounded-md border border-line px-3 text-sm text-muted">
-              <Filter :size="17" />
-              <span>符合分數</span>
-              <input
-                v-model="minScore"
-                class="w-24 accent-teal"
-                type="range"
-                min="0"
-                max="95"
-              >
-              <strong class="w-7 text-right text-ink">{{ minScore }}</strong>
-            </label>
+              <label class="block text-sm">
+                <span class="text-muted">名單類型</span>
+                <input
+                  v-model="activeTargetType"
+                  class="mt-1 h-10 w-full rounded-lg border border-line bg-white px-3 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
+                  placeholder="輸入類型標籤篩選…"
+                >
+              </label>
+            </div>
           </div>
+        </section>
 
+        <section class="mt-4 rounded-xl border border-line bg-white">
           <div class="overflow-x-auto">
             <table class="w-full min-w-[1320px] border-collapse text-left">
               <thead>
-                <tr class="border-b border-line bg-slate-50 text-xs uppercase text-muted">
+                <tr class="border-b border-line bg-slate-50 text-xs font-semibold text-muted">
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">公司</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">來源</th>
-                  <th class="whitespace-nowrap px-4 py-3 font-semibold">類型</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">詳細資料</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">符合分數</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">聯絡資訊</th>
@@ -530,7 +652,6 @@ onUnmounted(stopPolling)
                     </div>
                   </td>
                   <td class="whitespace-nowrap px-4 py-4 text-sm text-ink">{{ lead.source }}</td>
-                  <td class="whitespace-nowrap px-4 py-4 text-sm text-muted">{{ lead.category }}</td>
                   <td class="px-4 py-4">
                     <details v-if="lead.metadata && Object.keys(lead.metadata).length" class="text-sm">
                       <summary class="cursor-pointer text-teal-700">展開</summary>
@@ -613,7 +734,7 @@ onUnmounted(stopPolling)
                 <span>每頁</span>
                 <select
                   v-model="pageSize"
-                  class="h-9 rounded-md border border-line bg-white px-2 text-sm text-ink outline-none focus:border-teal"
+                  class="h-9 rounded-lg border border-line bg-white px-2 text-sm text-ink outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
                 >
                   <option
                     v-for="option in pageSizeOptions"
@@ -628,7 +749,7 @@ onUnmounted(stopPolling)
 
             <div class="flex items-center gap-1">
               <button
-                class="grid size-9 place-items-center rounded-md border border-line bg-white text-muted disabled:cursor-not-allowed disabled:opacity-40 enabled:hover:text-ink"
+                class="grid size-9 place-items-center rounded-lg border border-line bg-white text-muted disabled:cursor-not-allowed disabled:opacity-40 enabled:hover:text-ink"
                 title="上一頁"
                 :disabled="currentPage === 1"
                 @click="goToPage(currentPage - 1)"
@@ -645,7 +766,7 @@ onUnmounted(stopPolling)
                 {{ page }}
               </button>
               <button
-                class="grid size-9 place-items-center rounded-md border border-line bg-white text-muted disabled:cursor-not-allowed disabled:opacity-40 enabled:hover:text-ink"
+                class="grid size-9 place-items-center rounded-lg border border-line bg-white text-muted disabled:cursor-not-allowed disabled:opacity-40 enabled:hover:text-ink"
                 title="下一頁"
                 :disabled="currentPage === totalPages"
                 @click="goToPage(currentPage + 1)"
@@ -656,50 +777,10 @@ onUnmounted(stopPolling)
           </div>
         </section>
 
-        <section class="mt-6 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-          <div class="rounded-md border border-line bg-white p-5 shadow-soft">
-            <div class="flex items-start justify-between gap-4">
-              <div>
-                <h2 class="text-base font-semibold text-ink">建議抓取順序</h2>
-                <p class="mt-1 text-sm text-muted">先抓最貼近活動需求的來源，再用公司網站補聯絡資訊。</p>
-              </div>
-              <Sparkles class="text-coral" :size="20" />
-            </div>
-
-            <ol class="mt-5 space-y-3">
-              <li class="flex gap-3">
-                <span class="grid size-7 shrink-0 place-items-center rounded-md bg-teal text-sm font-semibold text-white">1</span>
-                <p class="text-sm text-muted"><strong class="text-ink">活動平台主辦單位</strong>：ACCUPASS、KKTIX，需求最直接。</p>
-              </li>
-              <li class="flex gap-3">
-                <span class="grid size-7 shrink-0 place-items-center rounded-md bg-ink text-sm font-semibold text-white">2</span>
-                <p class="text-sm text-muted"><strong class="text-ink">會展與公關公司</strong>：常替客戶辦活動，成交機率高。</p>
-              </li>
-              <li class="flex gap-3">
-                <span class="grid size-7 shrink-0 place-items-center rounded-md bg-coral text-sm font-semibold text-white">3</span>
-                <p class="text-sm text-muted"><strong class="text-ink">104 招募訊號</strong>：找正在招活動企劃、會展、行銷職缺的公司。</p>
-              </li>
-            </ol>
-          </div>
-
-          <div class="rounded-md border border-line bg-white p-5 shadow-soft">
-            <h2 class="text-base font-semibold text-ink">下一步 API 欄位</h2>
-            <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
-              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">company</span>
-              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">source</span>
-              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">industry</span>
-              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">website</span>
-              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">email</span>
-              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">phone</span>
-              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">fit_score</span>
-              <span class="rounded-md bg-slate-100 px-3 py-2 text-muted">metadata</span>
-            </div>
-          </div>
-        </section>
       </div>
 
       <div v-else-if="activeView === 'rules'" class="px-4 py-6 sm:px-6 lg:px-8">
-        <section class="rounded-md border border-line bg-white p-5 shadow-soft">
+        <section class="rounded-xl border border-line bg-white p-5">
           <h2 class="text-base font-semibold text-ink">產業評分規則</h2>
           <p class="mt-1 text-sm text-muted">
             每組「產業設定」定義公司關鍵字、業務關鍵字、排除關鍵字與門檻分數，抓取時用
@@ -711,7 +792,7 @@ onUnmounted(stopPolling)
             <div
               v-for="profile in profiles"
               :key="profile.id"
-              class="rounded-md border border-line p-4"
+              class="rounded-xl border border-line p-4"
             >
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -726,7 +807,7 @@ onUnmounted(stopPolling)
                 </div>
                 <button
                   v-if="!profile.isBuiltin"
-                  class="grid size-9 place-items-center rounded-md border border-line text-muted hover:text-red-600"
+                  class="grid size-9 place-items-center rounded-lg border border-line text-muted hover:text-red-600"
                   title="刪除設定檔"
                   @click="deleteProfile(profile.name)"
                 >
@@ -736,15 +817,15 @@ onUnmounted(stopPolling)
 
               <div class="mt-3 grid gap-3 text-sm sm:grid-cols-3">
                 <div>
-                  <p class="text-xs uppercase text-muted">公司關鍵字</p>
+                  <p class="text-xs font-semibold text-muted">公司關鍵字</p>
                   <p class="mt-1 text-ink">{{ profile.companyKeywords.join('、') || '—' }}</p>
                 </div>
                 <div>
-                  <p class="text-xs uppercase text-muted">業務關鍵字</p>
+                  <p class="text-xs font-semibold text-muted">業務關鍵字</p>
                   <p class="mt-1 text-ink">{{ profile.businessKeywords.join('、') || '—' }}</p>
                 </div>
                 <div>
-                  <p class="text-xs uppercase text-muted">排除關鍵字</p>
+                  <p class="text-xs font-semibold text-muted">排除關鍵字</p>
                   <p class="mt-1 text-ink">{{ profile.excludeKeywords.join('、') || '—' }}</p>
                 </div>
               </div>
@@ -758,7 +839,7 @@ onUnmounted(stopPolling)
           </div>
         </section>
 
-        <section class="mt-6 rounded-md border border-line bg-white p-5 shadow-soft">
+        <section class="mt-6 rounded-xl border border-line bg-white p-5">
           <h2 class="text-base font-semibold text-ink">新增自訂產業設定</h2>
           <p class="mt-1 text-sm text-muted">依你要找的產業，設定關鍵字與門檻分數。關鍵字用逗號或頓號分隔。</p>
 
@@ -768,7 +849,7 @@ onUnmounted(stopPolling)
                 <span class="text-muted">設定名稱</span>
                 <input
                   v-model="profileForm.name"
-                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                  class="mt-1 h-10 w-full rounded-lg border border-line px-3 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
                   placeholder="例如：資訊科技、餐飲加盟"
                 >
               </label>
@@ -776,7 +857,7 @@ onUnmounted(stopPolling)
                 <span class="text-muted">說明</span>
                 <input
                   v-model="profileForm.description"
-                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                  class="mt-1 h-10 w-full rounded-lg border border-line px-3 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
                   placeholder="這組設定要找什麼樣的公司"
                 >
               </label>
@@ -787,7 +868,7 @@ onUnmounted(stopPolling)
               <textarea
                 v-model="profileForm.companyKeywords"
                 rows="2"
-                class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-teal"
+                class="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
                 placeholder="資訊、軟體、科技、顧問"
               />
             </label>
@@ -797,7 +878,7 @@ onUnmounted(stopPolling)
               <textarea
                 v-model="profileForm.businessKeywords"
                 rows="2"
-                class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-teal"
+                class="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
                 placeholder="系統開發、雲端服務、資訊委外"
               />
             </label>
@@ -807,7 +888,7 @@ onUnmounted(stopPolling)
               <textarea
                 v-model="profileForm.excludeKeywords"
                 rows="2"
-                class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-teal"
+                class="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
                 placeholder="學校、醫院、政府機關"
               />
             </label>
@@ -817,14 +898,14 @@ onUnmounted(stopPolling)
                 <span class="text-muted">高分標籤（≥ 門檻分數）</span>
                 <input
                   v-model="profileForm.proLabel"
-                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                  class="mt-1 h-10 w-full rounded-lg border border-line px-3 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
                 >
               </label>
               <label class="block text-sm">
                 <span class="text-muted">中分標籤</span>
                 <input
                   v-model="profileForm.observableLabel"
-                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                  class="mt-1 h-10 w-full rounded-lg border border-line px-3 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
                 >
               </label>
             </div>
@@ -844,7 +925,7 @@ onUnmounted(stopPolling)
 
             <div>
               <button
-                class="inline-flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                class="inline-flex h-10 items-center gap-2 rounded-lg bg-ink px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
                 :disabled="profileSaving"
                 @click="submitProfile"
               >
@@ -856,33 +937,69 @@ onUnmounted(stopPolling)
       </div>
 
       <div v-else class="px-4 py-6 sm:px-6 lg:px-8">
-        <section class="rounded-md border border-line bg-white p-5 shadow-soft">
+        <section class="rounded-xl border border-line bg-white p-5">
           <h2 class="text-base font-semibold text-ink">名單擷取</h2>
           <p class="mt-1 text-sm text-muted">選擇來源、輸入關鍵字，套用一組產業評分規則，系統會在背景擷取並自動評分存入名單。</p>
 
           <div class="mt-4 grid gap-4">
             <div class="grid gap-4 sm:grid-cols-2">
-              <label class="block text-sm">
-                <span class="text-muted">資料來源</span>
-                <select
-                  v-model="scrapeForm.source"
-                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
-                >
-                  <option value="" disabled>請選擇來源</option>
-                  <option
-                    v-for="source in dataSources"
-                    :key="source.id"
-                    :value="source.id"
+              <div class="text-sm">
+                <span class="text-muted">資料來源（可複選）</span>
+                <div class="relative mt-1">
+                  <div
+                    v-if="sourceDropdownOpen"
+                    class="fixed inset-0 z-10"
+                    @click="sourceDropdownOpen = false"
+                  />
+                  <button
+                    type="button"
+                    class="flex h-10 w-full items-center justify-between rounded-lg border border-line bg-white px-3 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
+                    @click="sourceDropdownOpen = !sourceDropdownOpen"
                   >
-                    {{ source.name }}
-                  </option>
-                </select>
-              </label>
+                    <span :class="scrapeForm.sources.length ? 'text-ink' : 'text-muted'">
+                      {{ scrapeForm.sources.length
+                        ? dataSources.filter(s => scrapeForm.sources.includes(s.id)).map(s => s.name).join('、')
+                        : '請選擇來源' }}
+                    </span>
+                    <ChevronDown :size="15" class="shrink-0 text-muted" />
+                  </button>
+                  <div
+                    v-if="sourceDropdownOpen"
+                    class="absolute z-20 mt-1 w-full rounded-xl border border-line bg-white shadow-lg"
+                  >
+                    <label class="flex cursor-pointer items-center gap-3 border-b border-line px-3 py-2.5 hover:bg-slate-50">
+                      <input
+                        type="checkbox"
+                        :checked="scrapeForm.sources.length === dataSources.length"
+                        :indeterminate="scrapeForm.sources.length > 0 && scrapeForm.sources.length < dataSources.length"
+                        class="accent-teal"
+                        @change="scrapeForm.sources = scrapeForm.sources.length === dataSources.length ? [] : dataSources.map(s => s.id); scrapeError = ''"
+                      />
+                      <span class="font-medium text-ink">全選</span>
+                    </label>
+                    <label
+                      v-for="source in dataSources"
+                      :key="source.id"
+                      class="flex cursor-pointer items-center gap-3 px-3 py-2.5 hover:bg-slate-50"
+                    >
+                      <input
+                        type="checkbox"
+                        :value="source.id"
+                        v-model="scrapeForm.sources"
+                        class="accent-teal"
+                        @change="scrapeError = ''"
+                      />
+                      <span class="text-ink">{{ source.name }}</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
               <label class="block text-sm">
                 <span class="text-muted">產業評分設定</span>
                 <select
                   v-model="scrapeForm.profile"
-                  class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm outline-none focus:border-teal"
+                  class="mt-1 h-10 w-full rounded-lg border border-line px-3 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
                 >
                   <option value="" disabled>請選擇設定檔</option>
                   <option
@@ -896,13 +1013,28 @@ onUnmounted(stopPolling)
               </label>
             </div>
 
+            <div v-if="selectedSourceHints.length > 0" class="rounded-lg bg-slate-50 border border-line px-4 py-3">
+              <p class="text-xs font-medium text-muted mb-2">已選來源的抓取方式</p>
+              <ul class="space-y-1.5">
+                <li
+                  v-for="item in selectedSourceHints"
+                  :key="item.name"
+                  class="flex gap-2 text-xs text-muted"
+                >
+                  <span class="shrink-0 font-medium text-ink">{{ item.name }}</span>
+                  <span>{{ item.hint }}</span>
+                </li>
+              </ul>
+            </div>
+
             <label class="block text-sm">
               <span class="text-muted">關鍵字（逗號或頓號分隔，會用來搜尋來源網站）</span>
               <textarea
                 v-model="scrapeForm.keywords"
                 rows="2"
-                class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-teal"
+                class="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-teal focus:ring-2 focus:ring-teal/20"
                 placeholder="例如：公關、整合行銷、活動企劃"
+                @input="scrapeError = ''"
               />
             </label>
 
@@ -910,35 +1042,38 @@ onUnmounted(stopPolling)
 
             <div>
               <button
-                class="inline-flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-                :disabled="activeJob?.status === 'pending' || activeJob?.status === 'running'"
+                class="inline-flex h-10 items-center gap-2 rounded-lg bg-ink px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                :disabled="isRunning"
                 @click="startScrape"
               >
-                {{ (activeJob?.status === 'pending' || activeJob?.status === 'running') ? '擷取中…' : '開始擷取' }}
+                {{ isRunning ? '擷取中…' : '開始擷取' }}
               </button>
             </div>
 
-            <div
-              v-if="activeJob"
-              class="rounded-md border border-line bg-slate-50 p-4 text-sm"
-            >
-              <div class="flex items-center justify-between">
-                <span class="font-medium text-ink">工作 #{{ activeJob.id }}（{{ activeJob.status }}）</span>
-                <span class="text-muted">找到 {{ activeJob.foundCount }} 筆，存入 {{ activeJob.savedCount }} 筆</span>
+            <div v-if="activeJobs.length > 0" class="grid gap-2">
+              <div
+                v-for="job in activeJobs"
+                :key="job.id"
+                class="rounded-lg border border-line bg-slate-50 p-4 text-sm"
+              >
+                <div class="flex items-center justify-between">
+                  <span class="font-medium text-ink">{{ job.source }}（{{ job.status }}）</span>
+                  <span class="text-muted">找到 {{ job.foundCount }} 筆，存入 {{ job.savedCount }} 筆</span>
+                </div>
+                <p class="mt-1 text-muted">{{ job.errorMessage || job.progressMessage }}</p>
               </div>
-              <p class="mt-1 text-muted">{{ activeJob.errorMessage || activeJob.progressMessage }}</p>
             </div>
           </div>
         </section>
 
-        <section class="mt-6 rounded-md border border-line bg-white shadow-soft">
+        <section class="mt-6 rounded-xl border border-line bg-white">
           <div class="border-b border-line p-4">
             <h2 class="text-base font-semibold text-ink">最近擷取紀錄</h2>
           </div>
           <div class="overflow-x-auto">
             <table class="w-full min-w-[900px] border-collapse text-left text-sm">
               <thead>
-                <tr class="border-b border-line bg-slate-50 text-xs uppercase text-muted">
+                <tr class="border-b border-line bg-slate-50 text-xs font-semibold text-muted">
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">來源</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">關鍵字</th>
                   <th class="whitespace-nowrap px-4 py-3 font-semibold">產業設定</th>
@@ -970,4 +1105,39 @@ onUnmounted(stopPolling)
       </div>
     </section>
   </main>
+
+  <!-- 無法擷取來源清單 Modal -->
+  <Teleport to="body">
+    <div
+      v-if="showBlockedModal"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      @click.self="showBlockedModal = false"
+    >
+      <div class="w-full max-w-lg rounded-2xl border border-line bg-white shadow-xl">
+        <div class="flex items-center justify-between border-b border-line px-6 py-4">
+          <div class="flex items-center gap-2">
+            <AlertCircle :size="18" class="text-amber-500" />
+            <h2 class="text-sm font-semibold text-ink">無法擷取來源清單</h2>
+          </div>
+          <button class="text-muted hover:text-ink" @click="showBlockedModal = false">
+            <X :size="18" />
+          </button>
+        </div>
+
+        <div class="divide-y divide-line px-6 py-2">
+          <div v-for="source in BLOCKED_SOURCES" :key="source.name" class="py-4">
+            <div class="flex items-start justify-between gap-3">
+              <p class="text-sm font-medium text-ink">{{ source.name }}</p>
+              <span class="shrink-0 rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-600">無法抓取</span>
+            </div>
+            <p class="mt-1 text-xs text-muted leading-relaxed">{{ source.reason }}</p>
+          </div>
+        </div>
+
+        <div class="border-t border-line px-6 py-3">
+          <p class="text-xs text-muted">這些來源需要瀏覽器渲染或 API 授權，目前技術限制無法在背景自動抓取。</p>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>

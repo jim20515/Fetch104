@@ -14,9 +14,9 @@ export default <Partial<Config>>{
         muted: '#657083',
         line: '#d9dee8',
         surface: '#f7f8fb',
-        teal: '#0f766e',
+        teal: '#4f46e5',
         coral: '#e45d4f',
-        amber: '#b7791f'
+        amber: '#b45309'
       },
       boxShadow: {
         soft: '0 12px 35px rgba(24, 33, 47, 0.08)'

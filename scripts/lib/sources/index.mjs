@@ -1,7 +1,15 @@
-import accupass from './accupass.mjs'
+import salary from './salary.mjs'
+import source104 from './104.mjs'
+import gcis from './gcis.mjs'
+import yourator from './yourator.mjs'
+import source518 from './518.mjs'
 
 const SOURCES = {
-  [accupass.id]: accupass
+  [salary.id]: salary,
+  [source104.id]: source104,
+  [gcis.id]: gcis,
+  [yourator.id]: yourator,
+  [source518.id]: source518
 }
 
 export function listSources() {
