@@ -9,7 +9,7 @@ export const useLeadsData = () => {
       total: 0,
       sources: [],
       industries: [],
-      storage: 'sqlite'
+      storage: 'neon'
     })
   })
 

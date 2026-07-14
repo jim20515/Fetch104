@@ -7,7 +7,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'name is required' })
   }
 
-  upsertScoringProfile({
+  await upsertScoringProfile({
     name: body.name,
     description: body.description,
     companyKeywords: body.companyKeywords,

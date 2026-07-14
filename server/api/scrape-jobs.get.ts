@@ -1,5 +1,5 @@
 import { listJobs } from '../utils/scrape-jobs'
 
-export default defineEventHandler(() => {
-  return { jobs: listJobs() }
+export default defineEventHandler(async () => {
+  return { jobs: await listJobs() }
 })

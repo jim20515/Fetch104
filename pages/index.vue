@@ -162,7 +162,7 @@ const summary = computed(() => {
   const recentCount = leads.value.filter((lead) => lead.createdAt && new Date(lead.createdAt).getTime() >= sevenDaysAgo).length
 
   return [
-    { label: '名單總數', value: leads.value.length.toLocaleString(), hint: 'SQLite 本機資料' },
+    { label: '名單總數', value: leads.value.length.toLocaleString(), hint: 'Neon 雲端資料' },
     { label: '高潛力名單', value: professionalLeads.toLocaleString(), hint: '優先開發' },
     { label: '可觀察名單', value: observableLeads.toLocaleString(), hint: '需人工確認' },
     { label: '產業設定', value: industries.value.length.toLocaleString(), hint: '評分規則分組' },

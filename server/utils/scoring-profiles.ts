@@ -1,4 +1,4 @@
-import { escapeSql, executeSql, queryJson, type ScoringProfileRow } from './sqlite'
+import { ensureSchema, escapeSql, execute, query, type ScoringProfileRow } from './db'
 
 interface MetadataFieldSeed {
   key: string
@@ -53,39 +53,15 @@ const BUILTIN_PROFILES: BuiltinProfileSeed[] = [
   }
 ]
 
-export const ensureScoringProfilesTable = () => {
-  executeSql(`
-    CREATE TABLE IF NOT EXISTS scoring_profiles (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE,
-      description TEXT,
-      company_keywords TEXT NOT NULL DEFAULT '[]',
-      business_keywords TEXT NOT NULL DEFAULT '[]',
-      exclude_keywords TEXT NOT NULL DEFAULT '[]',
-      pro_threshold INTEGER NOT NULL DEFAULT 70,
-      observable_threshold INTEGER NOT NULL DEFAULT 45,
-      pro_label TEXT NOT NULL DEFAULT '專業主辦',
-      observable_label TEXT NOT NULL DEFAULT '可觀察',
-      general_label TEXT NOT NULL DEFAULT '一般活動',
-      metadata_schema TEXT NOT NULL DEFAULT '[]',
-      is_builtin INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-  `)
+export const ensureScoringProfilesTable = async () => {
+  await ensureSchema()
 
-  const existingColumns = new Set(queryJson<{ name: string }>('PRAGMA table_info(scoring_profiles);').map((row) => row.name))
-
-  if (!existingColumns.has('metadata_schema')) {
-    executeSql("ALTER TABLE scoring_profiles ADD COLUMN metadata_schema TEXT NOT NULL DEFAULT '[]';")
-  }
-
-  const existing = queryJson<{ name: string }>('SELECT name FROM scoring_profiles;').map((row) => row.name)
+  const existing = (await query<{ name: string }>('SELECT name FROM scoring_profiles;')).map((row) => row.name)
 
   for (const profile of BUILTIN_PROFILES) {
     if (existing.includes(profile.name)) continue
 
-    executeSql(`
+    await execute(`
       INSERT INTO scoring_profiles (
         name, description, company_keywords, business_keywords, exclude_keywords,
         pro_threshold, observable_threshold, pro_label, observable_label, general_label, metadata_schema, is_builtin
@@ -139,9 +115,9 @@ const rowToProfile = (row: RawProfileRow): ScoringProfileRow => ({
   isBuiltin: !!row.is_builtin
 })
 
-export const listScoringProfiles = (): ScoringProfileRow[] => {
-  ensureScoringProfilesTable()
-  const rows = queryJson<RawProfileRow>('SELECT * FROM scoring_profiles ORDER BY is_builtin DESC, name ASC;')
+export const listScoringProfiles = async (): Promise<ScoringProfileRow[]> => {
+  await ensureScoringProfilesTable()
+  const rows = await query<RawProfileRow>('SELECT * FROM scoring_profiles ORDER BY is_builtin DESC, name ASC;')
   return rows.map(rowToProfile)
 }
 
@@ -159,15 +135,15 @@ export interface ScoringProfileInput {
   metadataSchema?: { key: string, label: string }[]
 }
 
-export const upsertScoringProfile = (profile: ScoringProfileInput) => {
-  ensureScoringProfilesTable()
-  const existing = queryJson<{ is_builtin: number }>(`SELECT is_builtin FROM scoring_profiles WHERE name = '${escapeSql(profile.name)}';`)
+export const upsertScoringProfile = async (profile: ScoringProfileInput) => {
+  await ensureScoringProfilesTable()
+  const existing = await query<{ is_builtin: number }>(`SELECT is_builtin FROM scoring_profiles WHERE name = '${escapeSql(profile.name)}';`)
 
   if (existing[0]?.is_builtin) {
     throw createError({ statusCode: 400, statusMessage: '內建設定檔不可修改，請另存新名稱' })
   }
 
-  executeSql(`
+  await execute(`
     INSERT INTO scoring_profiles (
       name, description, company_keywords, business_keywords, exclude_keywords,
       pro_threshold, observable_threshold, pro_label, observable_label, general_label, metadata_schema, is_builtin, updated_at
@@ -197,19 +173,19 @@ export const upsertScoringProfile = (profile: ScoringProfileInput) => {
       observable_label = excluded.observable_label,
       general_label = excluded.general_label,
       metadata_schema = excluded.metadata_schema,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE is_builtin = 0;
+      updated_at = now()
+    WHERE scoring_profiles.is_builtin = 0;
   `)
 }
 
-export const deleteScoringProfile = (name: string) => {
-  ensureScoringProfilesTable()
-  const existing = queryJson<{ is_builtin: number }>(`SELECT is_builtin FROM scoring_profiles WHERE name = '${escapeSql(name)}';`)
+export const deleteScoringProfile = async (name: string) => {
+  await ensureScoringProfilesTable()
+  const existing = await query<{ is_builtin: number }>(`SELECT is_builtin FROM scoring_profiles WHERE name = '${escapeSql(name)}';`)
 
   if (existing.length === 0) return
   if (existing[0].is_builtin) {
     throw createError({ statusCode: 400, statusMessage: '內建設定檔不可刪除' })
   }
 
-  executeSql(`DELETE FROM scoring_profiles WHERE name = '${escapeSql(name)}';`)
+  await execute(`DELETE FROM scoring_profiles WHERE name = '${escapeSql(name)}';`)
 }

@@ -1,5 +1,5 @@
 import { listScoringProfiles } from '../utils/scoring-profiles'
 
-export default defineEventHandler(() => {
-  return { profiles: listScoringProfiles() }
+export default defineEventHandler(async () => {
+  return { profiles: await listScoringProfiles() }
 })

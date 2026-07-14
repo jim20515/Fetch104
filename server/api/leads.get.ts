@@ -1,4 +1,4 @@
-import { queryJson, type LeadRow } from '../utils/sqlite'
+import { ensureSchema, query, type LeadRow } from '../utils/db'
 
 interface RawLeadRow {
   id: number
@@ -20,8 +20,9 @@ interface RawLeadRow {
   updated_at: string
 }
 
-export default defineEventHandler(() => {
-  const rows = queryJson<RawLeadRow>(`
+export default defineEventHandler(async () => {
+  await ensureSchema()
+  const rows = await query<RawLeadRow>(`
     SELECT
       id,
       company,
@@ -69,6 +70,6 @@ export default defineEventHandler(() => {
     total: leads.length,
     sources: Array.from(new Set(leads.map((lead) => lead.source))),
     industries: Array.from(new Set(leads.map((lead) => lead.industry))),
-    storage: 'sqlite'
+    storage: 'neon'
   }
 })

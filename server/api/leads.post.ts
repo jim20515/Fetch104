@@ -10,7 +10,7 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  upsertLead({
+  await upsertLead({
     company: body.company,
     source: body.source,
     industry: body.industry || '活動會展',

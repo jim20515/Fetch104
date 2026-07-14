@@ -1,4 +1,4 @@
-import { escapeSql, executeSql } from './sqlite'
+import { ensureSchema, escapeSql, execute } from './db'
 
 export interface UpsertLeadInput {
   company: string
@@ -17,10 +17,12 @@ export interface UpsertLeadInput {
   metadata?: Record<string, unknown>
 }
 
-const sqlValue = (value: unknown) => value == null || value === '' ? 'NULL' : `'${escapeSql(value)}'`
+// 只有 null/undefined 轉為 NULL；空字串保留為 ''，以滿足 NOT NULL DEFAULT '' 欄位
+const sqlValue = (value: unknown) => value == null ? 'NULL' : `'${escapeSql(value)}'`
 
-export const upsertLead = (lead: UpsertLeadInput) => {
-  executeSql(`
+export const upsertLead = async (lead: UpsertLeadInput) => {
+  await ensureSchema()
+  await execute(`
     INSERT INTO leads (
       company, source, industry, category, contact, phone, website, official_website, status,
       fit_score, professional_score, target_type, score_reason, metadata, updated_at
